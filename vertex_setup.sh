@@ -1,12 +1,13 @@
 #!/bin/bash
 # 文件名：vertex_setup.sh
-# 功能：在Google Cloud Shell中创建Vertex AI项目并生成/下载JSON密钥文件（美国区域）
+# 功能：在Google Cloud Shell中创建Vertex AI项目并生成包含API密钥的配置文件
 
 # ======== 配置区 ========
 PROJECT_PREFIX="ai-api"                     # 项目名前缀
 DEFAULT_REGION="us-central1"                # 默认区域：美国中部（Gemini可用区）
 SERVICE_ACCOUNT_NAME="vertex-automation"    # 服务账号名称
-KEY_FILE_NAME="vertex-key.json"             # 密钥文件名
+CONFIG_FILE_NAME="vertex-config.json"       # 配置文件名称
+KEY_FILE_NAME="vertex-key.json"             # 服务账号密钥文件名
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -75,6 +76,41 @@ check_billing_status() {
   return 1
 }
 
+# ===== 生成API密钥 =====
+generate_api_key() {
+  local project_id=$1
+  local max_retries=5
+  local wait_seconds=10
+  
+  echo -e "${YELLOW}生成API密钥...${RESET}"
+  
+  for ((i=1; i<=max_retries; i++)); do
+    # 尝试创建API密钥
+    API_KEY_DATA=$(gcloud beta services api-keys create \
+      --display-name="Vertex_Auto_Key" \
+      --api-target=service=aiplatform.googleapis.com \
+      --format=json \
+      --quiet 2>/dev/null)
+    
+    if [ -n "$API_KEY_DATA" ]; then
+      # 提取密钥
+      API_KEY=$(echo "$API_KEY_DATA" | jq -r '.[].keyString' 2>/dev/null)
+      
+      if [[ "$API_KEY" == AIzaSy* ]]; then
+        echo -e "${GREEN}✓ API密钥生成成功${RESET}"
+        echo "$API_KEY"
+        return 0
+      fi
+    fi
+    
+    echo -e "${YELLOW}密钥生成失败 ($i/$max_retries)，等待${wait_seconds}秒后重试...${RESET}"
+    sleep $wait_seconds
+  done
+  
+  echo -e "${RED}API密钥生成失败！${RESET}"
+  return 1
+}
+
 # ===== 主执行流程 =====
 main() {
   # 检查是否在Cloud Shell中
@@ -82,6 +118,13 @@ main() {
     echo -e "${RED}错误：请在Google Cloud Shell中运行此脚本${RESET}"
     echo "访问：https://shell.cloud.google.com"
     exit 1
+  fi
+  
+  # 检查jq是否安装
+  if ! command -v jq &> /dev/null; then
+    echo -e "${YELLOW}安装jq JSON处理工具...${RESET}"
+    sudo apt-get update -qq > /dev/null
+    sudo apt-get install -y jq > /dev/null
   fi
   
   echo -e "${GREEN}✓ 检测到Cloud Shell环境${RESET}"
@@ -189,80 +232,114 @@ main() {
     --role="roles/aiplatform.serviceAgent" \
     --quiet
   
-  # 生成JSON密钥文件
-  echo -e "${YELLOW}步骤6/6：生成并下载JSON密钥文件${RESET}"
+  # 生成服务账号密钥文件
+  echo -e "${YELLOW}步骤6/6：生成配置文件${RESET}"
   
-  # 删除旧密钥文件（如果存在）
-  if [ -f "$KEY_FILE_NAME" ]; then
-    rm -f "$KEY_FILE_NAME"
-  fi
+  # 删除旧文件（如果存在）
+  rm -f "$KEY_FILE_NAME" "$CONFIG_FILE_NAME" 2>/dev/null
   
-  # 创建新密钥文件
+  # 创建服务账号密钥文件
   gcloud iam service-accounts keys create "$KEY_FILE_NAME" \
     --iam-account="$SERVICE_ACCOUNT_EMAIL" \
     --project="$PROJECT_ID"
   
-  # 验证密钥文件
-  if [ ! -f "$KEY_FILE_NAME" ]; then
-    echo -e "${RED}密钥文件创建失败！${RESET}"
-    echo "请尝试手动创建："
-    echo "gcloud iam service-accounts keys create $KEY_FILE_NAME --iam-account=$SERVICE_ACCOUNT_EMAIL"
+  # 生成API密钥
+  API_KEY=$(generate_api_key $PROJECT_ID)
+  
+  # 创建配置文件
+  cat > "$CONFIG_FILE_NAME" <<EOL
+{
+  "project_id": "${PROJECT_ID}",
+  "region": "${DEFAULT_REGION}",
+  "service_account_email": "${SERVICE_ACCOUNT_EMAIL}",
+  "api_key": "${API_KEY}",
+  "timestamp": "$(date +%Y-%m-%dT%H:%M:%S%z)",
+  "config": {
+    "gemini_model": "gemini-1.5-pro",
+    "llama_model": "llama-3-70b-instruct",
+    "endpoint": "us-central1-aiplatform.googleapis.com"
+  }
+}
+EOL
+
+  # 验证配置文件
+  if [ ! -f "$CONFIG_FILE_NAME" ]; then
+    echo -e "${RED}配置文件创建失败！${RESET}"
     exit 1
   fi
-  
+
   # 打印结果
   echo -e "\n${GREEN}✅ 配置完成！${RESET}"
   echo "========================================"
   echo -e "${BLUE}项目ID:${RESET} ${PROJECT_ID}"
-  echo -e "${BLUE}区域:${RESET}   ${DEFAULT_REGION} (美国中部)"
+  echo -e "${BLUE}区域:${RESET}   ${DEFAULT_REGION}"
   echo -e "${BLUE}服务账号:${RESET} ${SERVICE_ACCOUNT_EMAIL}"
-  echo -e "${BLUE}密钥文件:${RESET} ${KEY_FILE_NAME}"
+  echo -e "${BLUE}API密钥:${RESET} ${API_KEY}"
+  echo -e "${BLUE}配置文件:${RESET} ${CONFIG_FILE_NAME}"
   echo "========================================"
   
-  # 自动下载密钥文件
-  echo -e "\n${YELLOW}正在下载密钥文件...${RESET}"
-  if cloudshell download $KEY_FILE_NAME; then
-    echo -e "${GREEN}✓ 文件下载已启动！请查看浏览器下载${RESET}"
+  # 显示配置文件内容
+  echo -e "\n${YELLOW}配置文件内容：${RESET}"
+  cat "$CONFIG_FILE_NAME" | jq .
+  
+  # 自动下载配置文件
+  echo -e "\n${YELLOW}正在下载配置文件...${RESET}"
+  if cloudshell download $CONFIG_FILE_NAME; then
+    echo -e "${GREEN}✓ 配置文件下载已启动！${RESET}"
   else
     echo -e "${YELLOW}自动下载失败，请手动下载：${RESET}"
     echo "1. 在左侧文件浏览器中，找到当前目录"
-    echo "2. 右键点击 '${KEY_FILE_NAME}' 文件"
+    echo "2. 右键点击 '${CONFIG_FILE_NAME}' 文件"
     echo "3. 选择 'Download'"
   fi
   
-  # 生成Python使用示例（使用美国区域）
+  # 生成Python使用示例
   echo -e "\n${YELLOW}使用示例 (Python):${RESET}"
   cat <<EOL
+import json
 from google.cloud import aiplatform
 
-# 使用JSON密钥文件认证
+# 加载配置文件
+with open('${CONFIG_FILE_NAME}') as f:
+    config = json.load(f)
+
+# 使用API密钥认证
 aiplatform.init(
-    project="${PROJECT_ID}",
-    location="${DEFAULT_REGION}",  # 美国区域
-    credentials="${KEY_FILE_NAME}"  # 指定密钥文件路径
+    project=config['project_id'],
+    location=config['region'],
+    api_key=config['api_key']
+)
+
+# 使用服务账号认证（推荐）
+aiplatform.init(
+    project=config['project_id'],
+    location=config['region'],
+    credentials='${KEY_FILE_NAME}'  # 使用服务账号密钥文件
 )
 
 # 测试Gemini API连接
 from vertexai.preview.generative_models import GenerativeModel
 
-model = GenerativeModel("gemini-1.5-pro")
+model = GenerativeModel(config['config']['gemini_model'])
 response = model.generate_content("你好，世界！")
 print(response.text)
+
+# 测试Llama API连接
+try:
+    llama_model = GenerativeModel(config['config']['llama_model'])
+    response = llama_model.generate_content("你好，世界！")
+    print(response.text)
+except Exception as e:
+    print(f"Llama模型错误: {str(e)}")
+    print("可能需要申请访问权限: https://console.cloud.google.com/vertex-ai/publishers/meta/model-garden")
 EOL
-  
-  # 区域说明
-  echo -e "\n${YELLOW}区域选择说明：${RESET}"
-  echo "已设置美国中部(us-central1)区域，因为："
-  echo "1. Gemini Pro/Flash模型在此区域全面可用"
-  echo "2. 相比新加坡延迟更低（对北美用户）"
-  echo "3. 支持所有最新模型功能"
   
   # 安全提示
   echo -e "\n${RED}⚠️ 安全提示：${RESET}"
-  echo "1. 请妥善保管您的JSON密钥文件，不要泄露"
-  echo "2. 密钥文件包含敏感信息，类似密码"
-  echo "3. 如不慎泄露，请立即删除："
-  echo "   https://console.cloud.google.com/iam-admin/serviceaccounts"
+  echo "1. 请妥善保管您的配置文件，不要泄露"
+  echo "2. 配置文件包含敏感信息（API密钥）"
+  echo "3. 如不慎泄露，请立即删除API密钥："
+  echo "   https://console.cloud.google.com/apis/credentials"
 }
 
 # 执行主函数
