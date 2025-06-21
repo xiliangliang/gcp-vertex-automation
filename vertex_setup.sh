@@ -1,6 +1,6 @@
 #!/bin/bash
 # 文件名：vertex_setup.sh
-# 功能：在Google Cloud Shell中创建Vertex AI项目并生成JSON密钥文件（美国区域）
+# 功能：在Google Cloud Shell中创建Vertex AI项目并生成/下载JSON密钥文件（美国区域）
 
 # ======== 配置区 ========
 PROJECT_PREFIX="ai-api"                     # 项目名前缀
@@ -40,51 +40,6 @@ get_billing_account() {
   echo -e "${GREEN}✓ 使用结算账号: ${BLUE}${BILLING_ACCOUNT}${RESET}"
 }
 
-# ===== 主执行流程 =====
-main() {
-  # 检查是否在Cloud Shell中
-  if [ -z "$CLOUD_SHELL" ]; then
-    echo -e "${RED}错误：请在Google Cloud Shell中运行此脚本${RESET}"
-    echo "访问：https://shell.cloud.google.com"
-    exit 1
-  fi
-  
-  echo -e "${GREEN}✓ 检测到Cloud Shell环境${RESET}"
-  
-  # 获取结算账号
-  get_billing_account
-  
-  # 生成唯一项目ID
-  RANDOM_SUFFIX=$(generate_random_id)
-  PROJECT_ID="${PROJECT_PREFIX}-${RANDOM_SUFFIX}"
-  
-  # 创建项目
-  echo -e "${YELLOW}步骤1/5：创建新项目 [${BLUE}${PROJECT_ID}${YELLOW}]${RESET}"
-  gcloud projects create ${PROJECT_ID} --name="Vertex-AI-API"
-  
-  # 错误检查
-  if [ $? -ne 0 ]; then
-    echo -e "${RED}项目创建失败！请检查：${RESET}"
-    echo "1. 项目显示名称必须使用字母、数字和连字符"
-    echo "2. 不能包含空格或特殊字符"
-    echo "3. 长度建议6-30个字符"
-    exit 1
-  fi
-  
-  # 设置当前项目
-  echo -e "${YELLOW}步骤2/5：配置项目结算${RESET}"
-  gcloud config set project ${PROJECT_ID}
-  
-  # 尝试关联结算账户（带错误处理）
-  gcloud beta billing projects link ${PROJECT_ID} \
-    --billing-account=${BILLING_ACCOUNT} || \
-  echo -e "${YELLOW}结算账户关联失败，尝试使用其他账户${RESET}"
-  #!/bin/bash
-# 文件名：vertex_setup.sh
-# 修复版：增强结算状态处理
-
-# ... [其他部分保持不变] ...
-
 # ===== 结算状态验证函数 =====
 check_billing_status() {
   local project_id=$1
@@ -122,10 +77,37 @@ check_billing_status() {
 
 # ===== 主执行流程 =====
 main() {
-  # ... [前面部分保持不变] ...
+  # 检查是否在Cloud Shell中
+  if [ -z "$CLOUD_SHELL" ]; then
+    echo -e "${RED}错误：请在Google Cloud Shell中运行此脚本${RESET}"
+    echo "访问：https://shell.cloud.google.com"
+    exit 1
+  fi
   
-  # 步骤2/5：配置项目结算
-  echo -e "${YELLOW}步骤2/5：配置项目结算${RESET}"
+  echo -e "${GREEN}✓ 检测到Cloud Shell环境${RESET}"
+  
+  # 获取结算账号
+  get_billing_account
+  
+  # 生成唯一项目ID
+  RANDOM_SUFFIX=$(generate_random_id)
+  PROJECT_ID="${PROJECT_PREFIX}-${RANDOM_SUFFIX}"
+  
+  # 创建项目
+  echo -e "${YELLOW}步骤1/6：创建新项目 [${BLUE}${PROJECT_ID}${YELLOW}]${RESET}"
+  gcloud projects create ${PROJECT_ID} --name="Vertex-AI-API"
+  
+  # 错误检查
+  if [ $? -ne 0 ]; then
+    echo -e "${RED}项目创建失败！请检查：${RESET}"
+    echo "1. 项目显示名称必须使用字母、数字和连字符"
+    echo "2. 不能包含空格或特殊字符"
+    echo "3. 长度建议6-30个字符"
+    exit 1
+  fi
+  
+  # 设置当前项目
+  echo -e "${YELLOW}步骤2/6：配置项目结算${RESET}"
   gcloud config set project ${PROJECT_ID}
   
   # 尝试关联主结算账户
@@ -158,22 +140,11 @@ main() {
   fi
   
   # 添加额外等待确保结算状态传播
-  echo -e "${YELLOW}等待结算状态完全生效（60秒）...${RESET}"
-  sleep 60
-  
-  # ... [后续部分保持不变] ...
-  # 如果关联失败，尝试使用其他可用账户
-  if [ $? -ne 0 ]; then
-    ALTERNATIVE_ACCOUNT=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" | grep -v ${BILLING_ACCOUNT} | head -1)
-    if [ -n "$ALTERNATIVE_ACCOUNT" ]; then
-      echo -e "${YELLOW}使用备选结算账户: ${ALTERNATIVE_ACCOUNT}${RESET}"
-      gcloud beta billing projects link ${PROJECT_ID} \
-        --billing-account=${ALTERNATIVE_ACCOUNT}
-    fi
-  fi
+  echo -e "${YELLOW}步骤3/6：等待结算状态完全生效（30秒）...${RESET}"
+  sleep 30
   
   # 启用必需API（包含Gemini API）
-  echo -e "${YELLOW}步骤3/5：启用API服务${RESET}"
+  echo -e "${YELLOW}步骤4/6：启用API服务${RESET}"
   APIS=(
     "aiplatform.googleapis.com"           # Vertex AI API
     "generativelanguage.googleapis.com"   # Gemini API（关键添加）
@@ -195,11 +166,11 @@ main() {
   done
   
   # 添加额外等待确保API完全启用
-  echo -e "${YELLOW}等待API完全启用...${RESET}"
+  echo -e "${YELLOW}等待API完全启用（20秒）...${RESET}"
   sleep 20
   
   # 创建服务账号
-  echo -e "${YELLOW}步骤4/5：配置访问权限${RESET}"
+  echo -e "${YELLOW}步骤5/6：配置访问权限${RESET}"
   SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   
   gcloud iam service-accounts create ${SERVICE_ACCOUNT_NAME} \
@@ -219,7 +190,7 @@ main() {
     --quiet
   
   # 生成JSON密钥文件
-  echo -e "${YELLOW}步骤5/5：生成JSON密钥文件${RESET}"
+  echo -e "${YELLOW}步骤6/6：生成并下载JSON密钥文件${RESET}"
   
   # 删除旧密钥文件（如果存在）
   if [ -f "$KEY_FILE_NAME" ]; then
@@ -245,17 +216,19 @@ main() {
   echo -e "${BLUE}项目ID:${RESET} ${PROJECT_ID}"
   echo -e "${BLUE}区域:${RESET}   ${DEFAULT_REGION} (美国中部)"
   echo -e "${BLUE}服务账号:${RESET} ${SERVICE_ACCOUNT_EMAIL}"
+  echo -e "${BLUE}密钥文件:${RESET} ${KEY_FILE_NAME}"
   echo "========================================"
   
-  # 生成使用说明
-  echo -e "\n${YELLOW}密钥文件已生成: ${BLUE}${KEY_FILE_NAME}${RESET}"
-  echo -e "${YELLOW}下载方法：${RESET}"
-  echo "1. 在左侧文件浏览器中，找到当前目录"
-  echo "2. 右键点击 '${KEY_FILE_NAME}' 文件"
-  echo "3. 选择 'Download'"
-  echo ""
-  echo "或者使用下载命令："
-  echo -e "${BLUE}cloudshell download ${KEY_FILE_NAME}${RESET}"
+  # 自动下载密钥文件
+  echo -e "\n${YELLOW}正在下载密钥文件...${RESET}"
+  if cloudshell download $KEY_FILE_NAME; then
+    echo -e "${GREEN}✓ 文件下载已启动！请查看浏览器下载${RESET}"
+  else
+    echo -e "${YELLOW}自动下载失败，请手动下载：${RESET}"
+    echo "1. 在左侧文件浏览器中，找到当前目录"
+    echo "2. 右键点击 '${KEY_FILE_NAME}' 文件"
+    echo "3. 选择 'Download'"
+  fi
   
   # 生成Python使用示例（使用美国区域）
   echo -e "\n${YELLOW}使用示例 (Python):${RESET}"
