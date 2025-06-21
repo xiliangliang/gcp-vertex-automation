@@ -1,5 +1,5 @@
 #!/bin/bash
-# 文件名：gemini_key_factory.sh
+# 文件名：gemini_key_factory_fixed.sh
 # 功能：批量创建项目并生成Gemini API密钥
 
 # ======== 配置区 ========
@@ -102,7 +102,7 @@ get_valid_billing_account() {
   
   # 使用第一个激活的结算账户
   BILLING_ACCOUNT=$(echo "$BILLING_ACCOUNTS" | head -1)
-  echo -e "${GREEN}使用第一个结算账号: ${PURPLE}${BILLING_ACCOUNT}${RESET}"
+  echo -e "${GREEN}使用结算账号: ${PURPLE}${BILLING_ACCOUNT}${RESET}"
   
   return 0
 }
@@ -131,36 +131,41 @@ create_new_project() {
 link_billing_account() {
   local project_id=$1
   local billing_account=$2
-  local retry_count=0
-  local max_retries=3
   
   echo -e "${YELLOW}  关联结算账户...${RESET}"
   
-  while [ $retry_count -lt $max_retries ]; do
-    # 尝试关联结算账户
-    ERROR_OUTPUT=$(gcloud beta billing projects link ${project_id} \
-      --billing-account=${billing_account} 2>&1)
-    
-    if [ $? -eq 0 ]; then
-      # 添加等待确保状态传播
-      sleep 15
-      echo -e "${GREEN}  ✓ 结算账户关联成功${RESET}"
-      return 0
-    fi
-    
-    # 检查是否达到配额上限
-    if [[ "$ERROR_OUTPUT" == *"quota"* ]] || [[ "$ERROR_OUTPUT" == *"limit"* ]]; then
-      echo -e "${RED}   ✗ 已达结算账户项目配额上限！${RESET}"
-      return 2
-    fi
-    
-    retry_count=$((retry_count+1))
-    echo -e "${YELLOW}  重试关联 ($retry_count/$max_retries)...${RESET}"
-    sleep 10
-  done
+  # 尝试关联结算账户
+  gcloud beta billing projects link ${project_id} \
+    --billing-account=${billing_account} --quiet
   
-  echo -e "${RED}   ✗ 结算账户关联失败：${ERROR_OUTPUT}${RESET}"
-  return 1
+  # 检查结果
+  if [ $? -eq 0 ]; then
+    echo -e "${GREEN}  ✓ 结算账户关联成功${RESET}"
+    return 0
+  else
+    # 检查错误类型
+    BILLING_STATUS=$(gcloud beta billing projects describe $project_id --format="value(billingEnabled)" 2>/dev/null)
+    
+    if [ "$BILLING_STATUS" = "True" ]; then
+      echo -e "${GREEN}  ✓ 结算账户已关联（状态验证成功）${RESET}"
+      return 0
+    else
+      echo -e "${RED}   ✗ 结算账户关联失败${RESET}"
+      echo -e "${YELLOW}尝试直接设置结算账户...${RESET}"
+      
+      # 尝试直接设置结算账户
+      gcloud beta billing projects link ${project_id} \
+        --billing-account=${billing_account} --quiet
+        
+      if [ $? -eq 0 ]; then
+        echo -e "${GREEN}  ✓ 直接设置成功${RESET}"
+        return 0
+      else
+        echo -e "${RED}   ✗ 最终结算账户关联失败${RESET}"
+        return 1
+      fi
+    fi
+  fi
 }
 
 # ===== 函数：清理项目 =====
@@ -241,7 +246,7 @@ main() {
   
   echo -e "${PURPLE}"
   echo "======================================================"
-  echo "               Gemini API 密钥工厂"
+  echo "               Gemini API 密钥工厂 (修复版)"
   echo "      批量创建项目并生成API密钥直到达到限额"
   echo "======================================================"
   echo -e "${RESET}"
@@ -288,19 +293,23 @@ main() {
       continue
     fi
     
+    # 添加项目创建后等待
+    echo -e "${YELLOW}  等待项目初始化...${RESET}"
+    sleep 10
+    
     # 关联结算账户
     link_billing_account $PROJECT_ID $BILLING_ACCOUNT
     link_result=$?
     
-    if [ $link_result -eq 2 ]; then
-      # 达到配额上限
-      echo -e "${RED}已达结算账户项目配额上限！${RESET}"
-      break
-    elif [ $link_result -ne 0 ]; then
+    if [ $link_result -ne 0 ]; then
       # 其他错误，跳过此项目
       echo -e "${YELLOW}跳过此项目...${RESET}"
       continue
     fi
+    
+    # 添加结算关联后等待
+    echo -e "${YELLOW}  等待结算状态传播...${RESET}"
+    sleep 15
     
     # 设置当前项目
     gcloud config set project $PROJECT_ID --quiet
@@ -337,14 +346,13 @@ main() {
   if [ $SUCCESS_COUNT -eq 0 ]; then
     echo -e "\n${RED}未生成任何API密钥！${RESET}"
     echo "可能原因："
-    echo "1. 结算账户无效或未激活"
-    echo "2. 结算账户已达到项目配额上限"
-    echo "3. API服务启用失败"
-    echo "4. 权限不足"
+    echo "1. 结算账户关联失败"
+    echo "2. API服务启用失败"
+    echo "3. 密钥生成配额限制"
     echo "解决方案："
-    echo "1. 检查结算账户状态：https://console.cloud.google.com/billing"
-    echo "2. 检查项目配额：https://console.cloud.google.com/iam-admin/quotas"
-    echo "3. 确保有创建API密钥的权限"
+    echo "1. 手动检查结算账户状态：https://console.cloud.google.com/billing"
+    echo "2. 手动启用API：https://console.cloud.google.com/apis/api/generativelanguage.googleapis.com"
+    echo "3. 稍后重试脚本"
     exit 1
   fi
   
