@@ -4,10 +4,12 @@
 
 ## 一键执行
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/你的用户名/gcp-vertex-automation.git&cloudshell_run=chmod%20%2Bx%20vertex_setup.sh%20%26%26%20./vertex_setup.sh)
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/xiliangliang/gcp-vertex-automation.git&cloudshell_run=chmod%20%2Bx%20vertex_setup.sh%20%26%26%20./vertex_setup.sh)
 
 ## 手动执行步骤
 1. 打开 [Google Cloud Shell](https://shell.cloud.google.com)
 2. 克隆仓库：
    ```bash
    git clone https://github.com/你的用户名/gcp-vertex-automation.git
+
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/xiliangliang/gcp-vertex-automation.git&cloudshell_run=chmod%20%2Bx%20vertex_setup.sh%20%26%26%20./vertex_setup.sh)   
