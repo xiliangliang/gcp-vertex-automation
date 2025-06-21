@@ -1,10 +1,10 @@
 #!/bin/bash
 # 文件名：vertex_setup.sh
-# 功能：在Google Cloud Shell中创建Vertex AI项目并生成JSON密钥文件
+# 功能：在Google Cloud Shell中创建Vertex AI项目并生成JSON密钥文件（美国区域）
 
 # ======== 配置区 ========
 PROJECT_PREFIX="ai-api"                     # 项目名前缀
-DEFAULT_REGION="asia-southeast1"            # 默认区域：新加坡
+DEFAULT_REGION="us-central1"                # 默认区域：美国中部（Gemini可用区）
 SERVICE_ACCOUNT_NAME="vertex-automation"    # 服务账号名称
 KEY_FILE_NAME="vertex-key.json"             # 密钥文件名
 
@@ -74,13 +74,27 @@ main() {
   # 设置当前项目
   echo -e "${YELLOW}步骤2/5：配置项目结算${RESET}"
   gcloud config set project ${PROJECT_ID}
-  gcloud beta billing projects link ${PROJECT_ID} \
-    --billing-account=${BILLING_ACCOUNT}
   
-  # 启用必需API
+  # 尝试关联结算账户（带错误处理）
+  gcloud beta billing projects link ${PROJECT_ID} \
+    --billing-account=${BILLING_ACCOUNT} || \
+  echo -e "${YELLOW}结算账户关联失败，尝试使用其他账户${RESET}"
+  
+  # 如果关联失败，尝试使用其他可用账户
+  if [ $? -ne 0 ]; then
+    ALTERNATIVE_ACCOUNT=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" | grep -v ${BILLING_ACCOUNT} | head -1)
+    if [ -n "$ALTERNATIVE_ACCOUNT" ]; then
+      echo -e "${YELLOW}使用备选结算账户: ${ALTERNATIVE_ACCOUNT}${RESET}"
+      gcloud beta billing projects link ${PROJECT_ID} \
+        --billing-account=${ALTERNATIVE_ACCOUNT}
+    fi
+  fi
+  
+  # 启用必需API（包含Gemini API）
   echo -e "${YELLOW}步骤3/5：启用API服务${RESET}"
   APIS=(
-    "aiplatform.googleapis.com"       # Vertex AI API
+    "aiplatform.googleapis.com"           # Vertex AI API
+    "generativelanguage.googleapis.com"   # Gemini API（关键添加）
     "cloudresourcemanager.googleapis.com"
     "serviceusage.googleapis.com"
     "iam.googleapis.com"
@@ -92,11 +106,15 @@ main() {
     
     # 检查API启用状态
     if [ $? -ne 0 ]; then
-      echo -e "${RED}启用 ${api} 失败！${RESET}"
-      echo "尝试手动启用："
-      echo "gcloud services enable ${api} --project=${PROJECT_ID}"
+      echo -e "${YELLOW}等待API启用状态传播...${RESET}"
+      sleep 30  # 等待API状态刷新
+      gcloud services enable ${api} --quiet
     fi
   done
+  
+  # 添加额外等待确保API完全启用
+  echo -e "${YELLOW}等待API完全启用...${RESET}"
+  sleep 20
   
   # 创建服务账号
   echo -e "${YELLOW}步骤4/5：配置访问权限${RESET}"
@@ -106,13 +124,19 @@ main() {
     --display-name="Vertex-AI-Automation" \
     --project=${PROJECT_ID}
   
-  # 授予权限
+  # 授予Vertex AI权限
   gcloud projects add-iam-policy-binding ${PROJECT_ID} \
     --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
     --role="roles/aiplatform.user" \
     --quiet
   
-  # 生成JSON密钥文件（核心修改）
+  # 额外授予Gemini API权限
+  gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+    --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+    --role="roles/aiplatform.serviceAgent" \
+    --quiet
+  
+  # 生成JSON密钥文件
   echo -e "${YELLOW}步骤5/5：生成JSON密钥文件${RESET}"
   
   # 删除旧密钥文件（如果存在）
@@ -137,7 +161,7 @@ main() {
   echo -e "\n${GREEN}✅ 配置完成！${RESET}"
   echo "========================================"
   echo -e "${BLUE}项目ID:${RESET} ${PROJECT_ID}"
-  echo -e "${BLUE}区域:${RESET}   ${DEFAULT_REGION}"
+  echo -e "${BLUE}区域:${RESET}   ${DEFAULT_REGION} (美国中部)"
   echo -e "${BLUE}服务账号:${RESET} ${SERVICE_ACCOUNT_EMAIL}"
   echo "========================================"
   
@@ -151,7 +175,7 @@ main() {
   echo "或者使用下载命令："
   echo -e "${BLUE}cloudshell download ${KEY_FILE_NAME}${RESET}"
   
-  # 生成Python使用示例
+  # 生成Python使用示例（使用美国区域）
   echo -e "\n${YELLOW}使用示例 (Python):${RESET}"
   cat <<EOL
 from google.cloud import aiplatform
@@ -159,14 +183,24 @@ from google.cloud import aiplatform
 # 使用JSON密钥文件认证
 aiplatform.init(
     project="${PROJECT_ID}",
-    location="${DEFAULT_REGION}",
+    location="${DEFAULT_REGION}",  # 美国区域
     credentials="${KEY_FILE_NAME}"  # 指定密钥文件路径
 )
 
-# 测试API连接
-endpoint = aiplatform.Endpoint("")
-print("Vertex API 连接成功!")
+# 测试Gemini API连接
+from vertexai.preview.generative_models import GenerativeModel
+
+model = GenerativeModel("gemini-1.5-pro")
+response = model.generate_content("你好，世界！")
+print(response.text)
 EOL
+  
+  # 区域说明
+  echo -e "\n${YELLOW}区域选择说明：${RESET}"
+  echo "已设置美国中部(us-central1)区域，因为："
+  echo "1. Gemini Pro/Flash模型在此区域全面可用"
+  echo "2. 相比新加坡延迟更低（对北美用户）"
+  echo "3. 支持所有最新模型功能"
   
   # 安全提示
   echo -e "\n${RED}⚠️ 安全提示：${RESET}"
