@@ -1,6 +1,6 @@
 #!/bin/bash
 # 文件名：gemini_key_factory.sh
-# 功能：批量创建项目并生成Gemini API密钥，直到达到结算账户上限
+# 功能：批量创建项目并生成Gemini API密钥
 
 # ======== 配置区 ========
 PROJECT_PREFIX="gemini"           # 项目名前缀
@@ -10,7 +10,7 @@ ZIP_FILE="gemini_api_keys.zip"    # 下载包文件名
 MAX_API_GEN_RETRY=5               # 密钥生成最大重试次数
 API_GEN_WAIT=10                   # 密钥生成重试等待时间
 PROJECT_CREATION_WAIT=20          # 项目创建后等待时间
-MAX_PROJECT_ATTEMPTS=20           # 最大项目尝试次数
+MAX_PROJECT_ATTEMPTS=10           # 最大项目尝试次数
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -81,50 +81,30 @@ enable_required_apis() {
 
 # ===== 函数：获取有效的结算账号 =====
 get_valid_billing_account() {
-  echo -e "${CYAN}正在获取有效的结算账号...${RESET}"
+  echo -e "${CYAN}正在获取结算账号...${RESET}"
   
   # 获取所有可用的结算账号
   BILLING_ACCOUNTS=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" 2>/dev/null)
   
   if [ -z "$BILLING_ACCOUNTS" ]; then
     echo -e "${RED}未找到有效的结算账号！${RESET}"
-    echo "请确认："
-    echo "1. 您有有效的GCP结算账号"
-    echo "2. 在控制台创建结算账号：https://console.cloud.google.com/billing"
+    echo "可能原因："
+    echo "1. 您没有结算账户权限"
+    echo "2. 结算账户未激活"
+    echo "3. 需要创建结算账户"
+    echo "请访问: https://console.cloud.google.com/billing"
     exit 1
   fi
   
-  # 测试每个结算账号的有效性
-  for ACCOUNT in $BILLING_ACCOUNTS; do
-    # 创建临时项目进行测试
-    TEST_PROJECT="test-project-$(date +%s)"
-    gcloud projects create $TEST_PROJECT --quiet 2>/dev/null
-    
-    if [ $? -eq 0 ]; then
-      # 尝试关联结算账户
-      ERROR_OUTPUT=$(gcloud beta billing projects link $TEST_PROJECT \
-        --billing-account=$ACCOUNT 2>&1)
-      
-      if [ $? -eq 0 ]; then
-        # 成功关联，使用此结算账户
-        echo -e "${GREEN}✓ 验证有效的结算账号: ${PURPLE}${ACCOUNT}${RESET}"
-        
-        # 清理测试项目
-        gcloud projects delete $TEST_PROJECT --quiet 2>/dev/null
-        BILLING_ACCOUNT=$ACCOUNT
-        return 0
-      else
-        # 清理测试项目
-        gcloud projects delete $TEST_PROJECT --quiet 2>/dev/null
-      fi
-    fi
-  done
+  # 显示所有结算账户
+  echo -e "${GREEN}找到的结算账户：${RESET}"
+  gcloud beta billing accounts list --format="table(ACCOUNT_ID, OPEN, NAME)"
   
-  echo -e "${RED}未找到有效的结算账号！${RESET}"
-  echo "可能原因："
-  echo "1. 所有结算账户都已达到项目配额上限"
-  echo "2. 结算账户未激活或无效"
-  exit 1
+  # 使用第一个激活的结算账户
+  BILLING_ACCOUNT=$(echo "$BILLING_ACCOUNTS" | head -1)
+  echo -e "${GREEN}使用第一个结算账号: ${PURPLE}${BILLING_ACCOUNT}${RESET}"
+  
+  return 0
 }
 
 # ===== 函数：创建新项目 =====
@@ -357,9 +337,14 @@ main() {
   if [ $SUCCESS_COUNT -eq 0 ]; then
     echo -e "\n${RED}未生成任何API密钥！${RESET}"
     echo "可能原因："
-    echo "1. 所有结算账户都已达到项目配额上限"
-    echo "2. 结算账户无效或未激活"
+    echo "1. 结算账户无效或未激活"
+    echo "2. 结算账户已达到项目配额上限"
     echo "3. API服务启用失败"
+    echo "4. 权限不足"
+    echo "解决方案："
+    echo "1. 检查结算账户状态：https://console.cloud.google.com/billing"
+    echo "2. 检查项目配额：https://console.cloud.google.com/iam-admin/quotas"
+    echo "3. 确保有创建API密钥的权限"
     exit 1
   fi
   
