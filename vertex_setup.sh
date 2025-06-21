@@ -79,7 +79,89 @@ main() {
   gcloud beta billing projects link ${PROJECT_ID} \
     --billing-account=${BILLING_ACCOUNT} || \
   echo -e "${YELLOW}结算账户关联失败，尝试使用其他账户${RESET}"
+  #!/bin/bash
+# 文件名：vertex_setup.sh
+# 修复版：增强结算状态处理
+
+# ... [其他部分保持不变] ...
+
+# ===== 结算状态验证函数 =====
+check_billing_status() {
+  local project_id=$1
+  local max_retries=8
+  local wait_seconds=15
   
+  echo -e "${YELLOW}验证结算状态...${RESET}"
+  
+  for ((i=1; i<=max_retries; i++)); do
+    # 检查结算状态
+    billing_status=$(gcloud beta billing projects describe $project_id \
+      --format="value(billingEnabled)" 2>/dev/null)
+    
+    if [ "$billing_status" = "True" ]; then
+      echo -e "${GREEN}✓ 结算已启用${RESET}"
+      return 0
+    fi
+    
+    echo -e "${YELLOW}等待结算状态生效 ($i/$max_retries)...${RESET}"
+    sleep $wait_seconds
+  done
+  
+  # 最终检查
+  billing_status=$(gcloud beta billing projects describe $project_id \
+    --format="value(billingEnabled)" 2>/dev/null)
+    
+  if [ "$billing_status" = "True" ]; then
+    echo -e "${GREEN}✓ 结算已启用${RESET}"
+    return 0
+  fi
+  
+  echo -e "${RED}结算启用失败！${RESET}"
+  return 1
+}
+
+# ===== 主执行流程 =====
+main() {
+  # ... [前面部分保持不变] ...
+  
+  # 步骤2/5：配置项目结算
+  echo -e "${YELLOW}步骤2/5：配置项目结算${RESET}"
+  gcloud config set project ${PROJECT_ID}
+  
+  # 尝试关联主结算账户
+  echo "关联结算账户: ${BILLING_ACCOUNT}"
+  gcloud beta billing projects link ${PROJECT_ID} \
+    --billing-account=${BILLING_ACCOUNT} 2>/dev/null
+  
+  # 如果失败尝试备选账户
+  if [ $? -ne 0 ]; then
+    echo -e "${YELLOW}主结算账户关联失败，尝试备选账户${RESET}"
+    ALTERNATIVE_ACCOUNT=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" | grep -v ${BILLING_ACCOUNT} | head -1)
+    
+    if [ -n "$ALTERNATIVE_ACCOUNT" ]; then
+      echo -e "尝试备选结算账户: ${ALTERNATIVE_ACCOUNT}"
+      gcloud beta billing projects link ${PROJECT_ID} \
+        --billing-account=${ALTERNATIVE_ACCOUNT} 2>/dev/null
+    fi
+  fi
+  
+  # 验证结算状态
+  if ! check_billing_status $PROJECT_ID; then
+    # 提供手动修复链接
+    MANUAL_BILLING_LINK="https://console.cloud.google.com/billing/linkedaccount?project=${PROJECT_ID}"
+    echo -e "${RED}结算启用失败，请手动操作：${RESET}"
+    echo "1. 访问: ${MANUAL_BILLING_LINK}"
+    echo "2. 点击 '更改结算账户'"
+    echo "3. 选择有效的结算账户"
+    echo "4. 等待5分钟后重新运行脚本"
+    exit 1
+  fi
+  
+  # 添加额外等待确保结算状态传播
+  echo -e "${YELLOW}等待结算状态完全生效（60秒）...${RESET}"
+  sleep 60
+  
+  # ... [后续部分保持不变] ...
   # 如果关联失败，尝试使用其他可用账户
   if [ $? -ne 0 ]; then
     ALTERNATIVE_ACCOUNT=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" | grep -v ${BILLING_ACCOUNT} | head -1)
