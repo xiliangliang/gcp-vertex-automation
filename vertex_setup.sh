@@ -1,6 +1,6 @@
 #!/bin/bash
 # 文件名：vertex_setup.sh
-# 修复版：解决项目创建和权限问题
+# 修复版：解决API密钥提取问题
 
 # ======== 配置区 ========
 PROJECT_PREFIX="ai-api"                     # 项目名前缀
@@ -57,11 +57,11 @@ main() {
   RANDOM_SUFFIX=$(generate_random_id)
   PROJECT_ID="${PROJECT_PREFIX}-${RANDOM_SUFFIX}"
   
-  # ===== 修复点1：使用合规项目名称 =====
+  # 创建项目
   echo -e "${YELLOW}步骤1/5：创建新项目 [${BLUE}${PROJECT_ID}${YELLOW}]${RESET}"
   gcloud projects create ${PROJECT_ID} --name="Vertex-AI-API"
   
-  # ===== 修复点2：添加错误检查 =====
+  # 错误检查
   if [ $? -ne 0 ]; then
     echo -e "${RED}项目创建失败！请检查：${RESET}"
     echo "1. 项目显示名称必须使用字母、数字和连字符"
@@ -113,15 +113,35 @@ main() {
   
   # 生成API密钥
   echo -e "${YELLOW}步骤5/5：创建API密钥${RESET}"
+  
+  # 使用标准格式输出
   API_KEY_DATA=$(gcloud beta services api-keys create \
     --display-name="Vertex_Auto_Key" \
     --api-target=service=aiplatform.googleapis.com \
+    --format="value(keyString)" \
     --quiet 2>&1)
   
-  # ===== 修复点3：更可靠的密钥提取 =====
-  API_KEY=$(echo "${API_KEY_DATA}" | grep -Eo 'key: [a-zA-Z0-9_-]{39}' | cut -d' ' -f2)
+  # 如果标准输出失败，尝试备用方法
+  if [[ "$API_KEY_DATA" != AIzaSy* ]] || [ ${#API_KEY_DATA} -lt 30 ]; then
+    echo -e "${YELLOW}使用备用方法提取密钥...${RESET}"
+    API_KEY_DATA=$(gcloud beta services api-keys create \
+      --display-name="Vertex_Auto_Key" \
+      --api-target=service=aiplatform.googleapis.com \
+      --quiet)
+    
+    # 修复点：使用新的密钥提取方法
+    API_KEY=$(echo "$API_KEY_DATA" | grep '"keyString"' | head -1 | cut -d'"' -f4)
+    
+    if [ -z "$API_KEY" ]; then
+      # 终极方法：从JSON直接提取
+      API_KEY=$(echo "$API_KEY_DATA" | grep -oP '"keyString":\s*"\K[^"]+')
+    fi
+  else
+    API_KEY="$API_KEY_DATA"
+  fi
   
-  if [ -z "$API_KEY" ]; then
+  # 验证密钥格式
+  if [[ "$API_KEY" != AIzaSy* ]] || [ ${#API_KEY} -lt 30 ]; then
     echo -e "${RED}API密钥生成失败！${RESET}"
     echo "原始响应："
     echo "$API_KEY_DATA"
