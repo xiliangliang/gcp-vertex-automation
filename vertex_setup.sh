@@ -1,20 +1,7 @@
 #!/bin/bash
 # 文件名：vertex_setup.sh
-# 功能：在Google Cloud Shell中自动创建项目并获取Vertex AI API密钥
+# 修复版：解决项目创建和权限问题
 
-# 添加用户确认步骤
-echo "=============================================="
-echo " Vertex AI 自动配置脚本"
-echo "=============================================="
-read -p "是否要创建新项目并生成API密钥？(y/N) " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]
-then
-    echo "已取消操作"
-    exit 0
-fi
-
-# 原脚本内容继续...
 # ======== 配置区 ========
 PROJECT_PREFIX="ai-api"                     # 项目名前缀
 DEFAULT_REGION="asia-southeast1"            # 默认区域：新加坡
@@ -70,8 +57,18 @@ main() {
   RANDOM_SUFFIX=$(generate_random_id)
   PROJECT_ID="${PROJECT_PREFIX}-${RANDOM_SUFFIX}"
   
+  # ===== 修复点1：使用合规项目名称 =====
   echo -e "${YELLOW}步骤1/5：创建新项目 [${BLUE}${PROJECT_ID}${YELLOW}]${RESET}"
-  gcloud projects create ${PROJECT_ID} --name="Vertex AI API 服务"
+  gcloud projects create ${PROJECT_ID} --name="Vertex-AI-API"
+  
+  # ===== 修复点2：添加错误检查 =====
+  if [ $? -ne 0 ]; then
+    echo -e "${RED}项目创建失败！请检查：${RESET}"
+    echo "1. 项目显示名称必须使用字母、数字和连字符"
+    echo "2. 不能包含空格或特殊字符"
+    echo "3. 长度建议6-30个字符"
+    exit 1
+  fi
   
   # 设置当前项目
   echo -e "${YELLOW}步骤2/5：配置项目结算${RESET}"
@@ -91,6 +88,13 @@ main() {
   for api in "${APIS[@]}"; do
     echo -e " - 启用 ${BLUE}${api}${RESET}"
     gcloud services enable ${api} --quiet
+    
+    # 检查API启用状态
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}启用 ${api} 失败！${RESET}"
+      echo "尝试手动启用："
+      echo "gcloud services enable ${api} --project=${PROJECT_ID}"
+    fi
   done
   
   # 创建服务账号
@@ -98,7 +102,7 @@ main() {
   SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   
   gcloud iam service-accounts create ${SERVICE_ACCOUNT_NAME} \
-    --display-name="Vertex AI 自动化服务" \
+    --display-name="Vertex-AI-Automation" \
     --project=${PROJECT_ID}
   
   # 授予权限
@@ -114,7 +118,15 @@ main() {
     --api-target=service=aiplatform.googleapis.com \
     --quiet 2>&1)
   
-  API_KEY=$(echo "${API_KEY_DATA}" | grep -oP 'key: \K[^ ]+')
+  # ===== 修复点3：更可靠的密钥提取 =====
+  API_KEY=$(echo "${API_KEY_DATA}" | grep -Eo 'key: [a-zA-Z0-9_-]{39}' | cut -d' ' -f2)
+  
+  if [ -z "$API_KEY" ]; then
+    echo -e "${RED}API密钥生成失败！${RESET}"
+    echo "原始响应："
+    echo "$API_KEY_DATA"
+    exit 1
+  fi
   
   # 打印结果
   echo -e "\n${GREEN}✅ 配置完成！${RESET}"
