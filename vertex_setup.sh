@@ -1,11 +1,12 @@
 #!/bin/bash
 # 文件名：vertex_setup.sh
-# 修复版：解决API密钥提取问题
+# 功能：在Google Cloud Shell中创建Vertex AI项目并生成JSON密钥文件
 
 # ======== 配置区 ========
 PROJECT_PREFIX="ai-api"                     # 项目名前缀
 DEFAULT_REGION="asia-southeast1"            # 默认区域：新加坡
 SERVICE_ACCOUNT_NAME="vertex-automation"    # 服务账号名称
+KEY_FILE_NAME="vertex-key.json"             # 密钥文件名
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -111,40 +112,24 @@ main() {
     --role="roles/aiplatform.user" \
     --quiet
   
-  # 生成API密钥
-  echo -e "${YELLOW}步骤5/5：创建API密钥${RESET}"
+  # 生成JSON密钥文件（核心修改）
+  echo -e "${YELLOW}步骤5/5：生成JSON密钥文件${RESET}"
   
-  # 使用标准格式输出
-  API_KEY_DATA=$(gcloud beta services api-keys create \
-    --display-name="Vertex_Auto_Key" \
-    --api-target=service=aiplatform.googleapis.com \
-    --format="value(keyString)" \
-    --quiet 2>&1)
-  
-  # 如果标准输出失败，尝试备用方法
-  if [[ "$API_KEY_DATA" != AIzaSy* ]] || [ ${#API_KEY_DATA} -lt 30 ]; then
-    echo -e "${YELLOW}使用备用方法提取密钥...${RESET}"
-    API_KEY_DATA=$(gcloud beta services api-keys create \
-      --display-name="Vertex_Auto_Key" \
-      --api-target=service=aiplatform.googleapis.com \
-      --quiet)
-    
-    # 修复点：使用新的密钥提取方法
-    API_KEY=$(echo "$API_KEY_DATA" | grep '"keyString"' | head -1 | cut -d'"' -f4)
-    
-    if [ -z "$API_KEY" ]; then
-      # 终极方法：从JSON直接提取
-      API_KEY=$(echo "$API_KEY_DATA" | grep -oP '"keyString":\s*"\K[^"]+')
-    fi
-  else
-    API_KEY="$API_KEY_DATA"
+  # 删除旧密钥文件（如果存在）
+  if [ -f "$KEY_FILE_NAME" ]; then
+    rm -f "$KEY_FILE_NAME"
   fi
   
-  # 验证密钥格式
-  if [[ "$API_KEY" != AIzaSy* ]] || [ ${#API_KEY} -lt 30 ]; then
-    echo -e "${RED}API密钥生成失败！${RESET}"
-    echo "原始响应："
-    echo "$API_KEY_DATA"
+  # 创建新密钥文件
+  gcloud iam service-accounts keys create "$KEY_FILE_NAME" \
+    --iam-account="$SERVICE_ACCOUNT_EMAIL" \
+    --project="$PROJECT_ID"
+  
+  # 验证密钥文件
+  if [ ! -f "$KEY_FILE_NAME" ]; then
+    echo -e "${RED}密钥文件创建失败！${RESET}"
+    echo "请尝试手动创建："
+    echo "gcloud iam service-accounts keys create $KEY_FILE_NAME --iam-account=$SERVICE_ACCOUNT_EMAIL"
     exit 1
   fi
   
@@ -153,18 +138,29 @@ main() {
   echo "========================================"
   echo -e "${BLUE}项目ID:${RESET} ${PROJECT_ID}"
   echo -e "${BLUE}区域:${RESET}   ${DEFAULT_REGION}"
-  echo -e "${BLUE}API密钥:${RESET} ${API_KEY}"
+  echo -e "${BLUE}服务账号:${RESET} ${SERVICE_ACCOUNT_EMAIL}"
   echo "========================================"
   
-  # 生成使用示例
+  # 生成使用说明
+  echo -e "\n${YELLOW}密钥文件已生成: ${BLUE}${KEY_FILE_NAME}${RESET}"
+  echo -e "${YELLOW}下载方法：${RESET}"
+  echo "1. 在左侧文件浏览器中，找到当前目录"
+  echo "2. 右键点击 '${KEY_FILE_NAME}' 文件"
+  echo "3. 选择 'Download'"
+  echo ""
+  echo "或者使用下载命令："
+  echo -e "${BLUE}cloudshell download ${KEY_FILE_NAME}${RESET}"
+  
+  # 生成Python使用示例
   echo -e "\n${YELLOW}使用示例 (Python):${RESET}"
   cat <<EOL
 from google.cloud import aiplatform
 
+# 使用JSON密钥文件认证
 aiplatform.init(
     project="${PROJECT_ID}",
     location="${DEFAULT_REGION}",
-    api_key="${API_KEY}"
+    credentials="${KEY_FILE_NAME}"  # 指定密钥文件路径
 )
 
 # 测试API连接
@@ -174,8 +170,10 @@ EOL
   
   # 安全提示
   echo -e "\n${RED}⚠️ 安全提示：${RESET}"
-  echo "1. 请妥善保管您的API密钥"
-  echo "2. 建议配置访问限制：https://console.cloud.google.com/apis/credentials/key/${API_KEY}"
+  echo "1. 请妥善保管您的JSON密钥文件，不要泄露"
+  echo "2. 密钥文件包含敏感信息，类似密码"
+  echo "3. 如不慎泄露，请立即删除："
+  echo "   https://console.cloud.google.com/iam-admin/serviceaccounts"
 }
 
 # 执行主函数
