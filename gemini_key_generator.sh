@@ -10,6 +10,7 @@ ZIP_FILE="gemini_api_keys.zip"    # 下载包文件名
 MAX_API_GEN_RETRY=5               # 密钥生成最大重试次数
 API_GEN_WAIT=10                   # 密钥生成重试等待时间
 PROJECT_CREATION_WAIT=20          # 项目创建后等待时间
+MAX_PROJECT_ATTEMPTS=20           # 最大项目尝试次数
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -78,9 +79,9 @@ enable_required_apis() {
   echo -e "${GREEN}  ✓ API已启用${RESET}"
 }
 
-# ===== 函数：获取结算账号 =====
-get_billing_account() {
-  echo -e "${CYAN}正在获取结算账号...${RESET}"
+# ===== 函数：获取有效的结算账号 =====
+get_valid_billing_account() {
+  echo -e "${CYAN}正在获取有效的结算账号...${RESET}"
   
   # 获取所有可用的结算账号
   BILLING_ACCOUNTS=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" 2>/dev/null)
@@ -93,9 +94,37 @@ get_billing_account() {
     exit 1
   fi
   
-  # 使用第一个结算账号
-  BILLING_ACCOUNT=$(echo "$BILLING_ACCOUNTS" | head -1)
-  echo -e "${GREEN}✓ 使用结算账号: ${PURPLE}${BILLING_ACCOUNT}${RESET}"
+  # 测试每个结算账号的有效性
+  for ACCOUNT in $BILLING_ACCOUNTS; do
+    # 创建临时项目进行测试
+    TEST_PROJECT="test-project-$(date +%s)"
+    gcloud projects create $TEST_PROJECT --quiet 2>/dev/null
+    
+    if [ $? -eq 0 ]; then
+      # 尝试关联结算账户
+      ERROR_OUTPUT=$(gcloud beta billing projects link $TEST_PROJECT \
+        --billing-account=$ACCOUNT 2>&1)
+      
+      if [ $? -eq 0 ]; then
+        # 成功关联，使用此结算账户
+        echo -e "${GREEN}✓ 验证有效的结算账号: ${PURPLE}${ACCOUNT}${RESET}"
+        
+        # 清理测试项目
+        gcloud projects delete $TEST_PROJECT --quiet 2>/dev/null
+        BILLING_ACCOUNT=$ACCOUNT
+        return 0
+      else
+        # 清理测试项目
+        gcloud projects delete $TEST_PROJECT --quiet 2>/dev/null
+      fi
+    fi
+  done
+  
+  echo -e "${RED}未找到有效的结算账号！${RESET}"
+  echo "可能原因："
+  echo "1. 所有结算账户都已达到项目配额上限"
+  echo "2. 结算账户未激活或无效"
+  exit 1
 }
 
 # ===== 函数：创建新项目 =====
@@ -122,28 +151,36 @@ create_new_project() {
 link_billing_account() {
   local project_id=$1
   local billing_account=$2
+  local retry_count=0
+  local max_retries=3
   
   echo -e "${YELLOW}  关联结算账户...${RESET}"
   
-  # 尝试关联结算账户
-  ERROR_OUTPUT=$(gcloud beta billing projects link ${project_id} \
-    --billing-account=${billing_account} 2>&1)
-  
-  if [ $? -ne 0 ]; then
+  while [ $retry_count -lt $max_retries ]; do
+    # 尝试关联结算账户
+    ERROR_OUTPUT=$(gcloud beta billing projects link ${project_id} \
+      --billing-account=${billing_account} 2>&1)
+    
+    if [ $? -eq 0 ]; then
+      # 添加等待确保状态传播
+      sleep 15
+      echo -e "${GREEN}  ✓ 结算账户关联成功${RESET}"
+      return 0
+    fi
+    
     # 检查是否达到配额上限
     if [[ "$ERROR_OUTPUT" == *"quota"* ]] || [[ "$ERROR_OUTPUT" == *"limit"* ]]; then
       echo -e "${RED}   ✗ 已达结算账户项目配额上限！${RESET}"
       return 2
-    else
-      echo -e "${RED}   ✗ 结算账户关联失败：${ERROR_OUTPUT}${RESET}"
-      return 1
     fi
-  fi
+    
+    retry_count=$((retry_count+1))
+    echo -e "${YELLOW}  重试关联 ($retry_count/$max_retries)...${RESET}"
+    sleep 10
+  done
   
-  # 添加等待确保状态传播
-  sleep 15
-  echo -e "${GREEN}  ✓ 结算账户关联成功${RESET}"
-  return 0
+  echo -e "${RED}   ✗ 结算账户关联失败：${ERROR_OUTPUT}${RESET}"
+  return 1
 }
 
 # ===== 函数：清理项目 =====
@@ -243,8 +280,8 @@ main() {
   # 创建输出目录
   mkdir -p "$OUTPUT_DIR"
   
-  # 获取结算账号
-  get_billing_account
+  # 获取有效的结算账号
+  get_valid_billing_account
   
   # 初始化计数器
   PROJECT_COUNT=0
@@ -258,8 +295,8 @@ main() {
   
   echo -e "\n${CYAN}开始批量创建项目和API密钥...${RESET}"
   
-  # 主循环 - 直到达到配额上限
-  while true; do
+  # 主循环 - 直到达到配额上限或最大尝试次数
+  while [ $PROJECT_COUNT -lt $MAX_PROJECT_ATTEMPTS ]; do
     PROJECT_COUNT=$((PROJECT_COUNT+1))
     echo -e "\n${PURPLE}===== 处理项目 #${PROJECT_COUNT} =====${RESET}"
     
@@ -277,9 +314,11 @@ main() {
     
     if [ $link_result -eq 2 ]; then
       # 达到配额上限
+      echo -e "${RED}已达结算账户项目配额上限！${RESET}"
       break
     elif [ $link_result -ne 0 ]; then
       # 其他错误，跳过此项目
+      echo -e "${YELLOW}跳过此项目...${RESET}"
       continue
     fi
     
@@ -313,6 +352,16 @@ main() {
     # 项目间等待
     sleep $PROJECT_CREATION_WAIT
   done
+  
+  # 检查是否有成功生成密钥
+  if [ $SUCCESS_COUNT -eq 0 ]; then
+    echo -e "\n${RED}未生成任何API密钥！${RESET}"
+    echo "可能原因："
+    echo "1. 所有结算账户都已达到项目配额上限"
+    echo "2. 结算账户无效或未激活"
+    echo "3. API服务启用失败"
+    exit 1
+  fi
   
   # 生成使用指南
   generate_usage_guide "$KEY_FILE"
