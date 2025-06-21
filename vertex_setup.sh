@@ -2,6 +2,19 @@
 # 文件名：vertex_setup.sh
 # 功能：在Google Cloud Shell中自动创建项目并获取Vertex AI API密钥
 
+# 添加用户确认步骤
+echo "=============================================="
+echo " Vertex AI 自动配置脚本"
+echo "=============================================="
+read -p "是否要创建新项目并生成API密钥？(y/N) " -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Yy]$ ]]
+then
+    echo "已取消操作"
+    exit 0
+fi
+
+# 原脚本内容继续...
 # ======== 配置区 ========
 PROJECT_PREFIX="ai-api"                     # 项目名前缀
 DEFAULT_REGION="asia-southeast1"            # 默认区域：新加坡
