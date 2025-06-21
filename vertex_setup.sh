@@ -1,13 +1,14 @@
 #!/bin/bash
 # 文件名：vertex_setup.sh
-# 功能：在Google Cloud Shell中创建Vertex AI项目并生成包含API密钥的配置文件
+# 功能：在Google Cloud Shell中创建Vertex AI项目并生成API密钥
 
 # ======== 配置区 ========
-PROJECT_PREFIX="ai-api"                     # 项目名前缀
-DEFAULT_REGION="us-central1"                # 默认区域：美国中部（Gemini可用区）
+PROJECT_PREFIX="vertex-api"                 # 项目名前缀
+DEFAULT_REGION="us-central1"                # 默认区域
 SERVICE_ACCOUNT_NAME="vertex-automation"    # 服务账号名称
 CONFIG_FILE_NAME="vertex-config.json"       # 配置文件名称
 KEY_FILE_NAME="vertex-key.json"             # 服务账号密钥文件名
+MAX_PROJECTS=5                              # 最大允许创建的项目数
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -111,6 +112,24 @@ generate_api_key() {
   return 1
 }
 
+# ===== 检查项目配额 =====
+check_project_quota() {
+  echo -e "${YELLOW}检查项目配额...${RESET}"
+  
+  # 获取当前项目数量
+  CURRENT_PROJECTS=$(gcloud projects list --format="value(projectId)" | wc -l)
+  
+  if [ "$CURRENT_PROJECTS" -ge "$MAX_PROJECTS" ]; then
+    echo -e "${RED}错误：已达到项目配额上限 ($MAX_PROJECTS个项目)${RESET}"
+    echo "解决方案："
+    echo "1. 删除不再使用的项目：https://console.cloud.google.com/cloud-resource-manager"
+    echo "2. 等待24小时让配额重置"
+    exit 1
+  fi
+  
+  echo -e "${GREEN}✓ 当前项目数: $CURRENT_PROJECTS/$MAX_PROJECTS${RESET}"
+}
+
 # ===== 主执行流程 =====
 main() {
   # 检查是否在Cloud Shell中
@@ -129,6 +148,9 @@ main() {
   
   echo -e "${GREEN}✓ 检测到Cloud Shell环境${RESET}"
   
+  # 检查项目配额
+  check_project_quota
+  
   # 获取结算账号
   get_billing_account
   
@@ -143,9 +165,8 @@ main() {
   # 错误检查
   if [ $? -ne 0 ]; then
     echo -e "${RED}项目创建失败！请检查：${RESET}"
-    echo "1. 项目显示名称必须使用字母、数字和连字符"
-    echo "2. 不能包含空格或特殊字符"
-    echo "3. 长度建议6-30个字符"
+    echo "1. 项目ID必须全局唯一（尝试添加更多随机字符）"
+    echo "2. 项目名称格式：小写字母、数字和连字符"
     exit 1
   fi
   
@@ -155,18 +176,26 @@ main() {
   
   # 尝试关联主结算账户
   echo "关联结算账户: ${BILLING_ACCOUNT}"
-  gcloud beta billing projects link ${PROJECT_ID} \
-    --billing-account=${BILLING_ACCOUNT} 2>/dev/null
+  ERROR_MESSAGE=$(gcloud beta billing projects link ${PROJECT_ID} \
+    --billing-account=${BILLING_ACCOUNT} 2>&1)
   
-  # 如果失败尝试备选账户
+  # 检查错误类型
   if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}主结算账户关联失败，尝试备选账户${RESET}"
-    ALTERNATIVE_ACCOUNT=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" | grep -v ${BILLING_ACCOUNT} | head -1)
-    
-    if [ -n "$ALTERNATIVE_ACCOUNT" ]; then
-      echo -e "尝试备选结算账户: ${ALTERNATIVE_ACCOUNT}"
-      gcloud beta billing projects link ${PROJECT_ID} \
-        --billing-account=${ALTERNATIVE_ACCOUNT} 2>/dev/null
+    if [[ "$ERROR_MESSAGE" == *"quota"* ]]; then
+      echo -e "${RED}结算账户已达项目配额上限！${RESET}"
+      echo "解决方案："
+      echo "1. 删除不再使用的项目：https://console.cloud.google.com/cloud-resource-manager"
+      echo "2. 联系GCP支持增加配额：https://cloud.google.com/docs/quota"
+      exit 1
+    else
+      echo -e "${YELLOW}主结算账户关联失败，尝试备选账户${RESET}"
+      ALTERNATIVE_ACCOUNT=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" | grep -v ${BILLING_ACCOUNT} | head -1)
+      
+      if [ -n "$ALTERNATIVE_ACCOUNT" ]; then
+        echo -e "尝试备选结算账户: ${ALTERNATIVE_ACCOUNT}"
+        gcloud beta billing projects link ${PROJECT_ID} \
+          --billing-account=${ALTERNATIVE_ACCOUNT} 2>/dev/null
+      fi
     fi
   fi
   
@@ -186,11 +215,11 @@ main() {
   echo -e "${YELLOW}步骤3/6：等待结算状态完全生效（30秒）...${RESET}"
   sleep 30
   
-  # 启用必需API（包含Gemini API）
+  # 启用必需API
   echo -e "${YELLOW}步骤4/6：启用API服务${RESET}"
   APIS=(
     "aiplatform.googleapis.com"           # Vertex AI API
-    "generativelanguage.googleapis.com"   # Gemini API（关键添加）
+    "generativelanguage.googleapis.com"   # Gemini API
     "cloudresourcemanager.googleapis.com"
     "serviceusage.googleapis.com"
     "iam.googleapis.com"
@@ -226,7 +255,7 @@ main() {
     --role="roles/aiplatform.user" \
     --quiet
   
-  # 额外授予Gemini API权限
+  # 额外授予服务代理权限
   gcloud projects add-iam-policy-binding ${PROJECT_ID} \
     --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
     --role="roles/aiplatform.serviceAgent" \
@@ -246,19 +275,15 @@ main() {
   # 生成API密钥
   API_KEY=$(generate_api_key $PROJECT_ID)
   
-  # 创建配置文件
+  # 创建配置文件（简化版）
   cat > "$CONFIG_FILE_NAME" <<EOL
 {
   "project_id": "${PROJECT_ID}",
   "region": "${DEFAULT_REGION}",
   "service_account_email": "${SERVICE_ACCOUNT_EMAIL}",
   "api_key": "${API_KEY}",
-  "timestamp": "$(date +%Y-%m-%dT%H:%M:%S%z)",
-  "config": {
-    "gemini_model": "gemini-1.5-pro",
-    "llama_model": "llama-3-70b-instruct",
-    "endpoint": "us-central1-aiplatform.googleapis.com"
-  }
+  "key_file": "${KEY_FILE_NAME}",
+  "timestamp": "$(date +%Y-%m-%dT%H:%M:%S%z)"
 }
 EOL
 
@@ -269,13 +294,13 @@ EOL
   fi
 
   # 打印结果
-  echo -e "\n${GREEN}✅ 配置完成！${RESET}"
+  echo -e "\n${GREEN}✅ Vertex AI配置完成！${RESET}"
   echo "========================================"
   echo -e "${BLUE}项目ID:${RESET} ${PROJECT_ID}"
   echo -e "${BLUE}区域:${RESET}   ${DEFAULT_REGION}"
-  echo -e "${BLUE}服务账号:${RESET} ${SERVICE_ACCOUNT_EMAIL}"
   echo -e "${BLUE}API密钥:${RESET} ${API_KEY}"
   echo -e "${BLUE}配置文件:${RESET} ${CONFIG_FILE_NAME}"
+  echo -e "${BLUE}密钥文件:${RESET} ${KEY_FILE_NAME}"
   echo "========================================"
   
   # 显示配置文件内容
@@ -294,52 +319,39 @@ EOL
   fi
   
   # 生成Python使用示例
-  echo -e "\n${YELLOW}使用示例 (Python):${RESET}"
+  echo -e "\n${YELLOW}Vertex AI使用示例 (Python):${RESET}"
   cat <<EOL
-import json
-from google.cloud import aiplatform
+import vertexai
+from vertexai.generative_models import GenerativeModel
 
-# 加载配置文件
-with open('${CONFIG_FILE_NAME}') as f:
-    config = json.load(f)
+# 方法1：使用API密钥认证
+vertexai.init(project="YOUR_PROJECT_ID", location="us-central1", api_key="YOUR_API_KEY")
 
-# 使用API密钥认证
-aiplatform.init(
-    project=config['project_id'],
-    location=config['region'],
-    api_key=config['api_key']
-)
+# 方法2：使用服务账号密钥文件（推荐）
+# vertexai.init(project="YOUR_PROJECT_ID", location="us-central1", credentials="vertex-key.json")
 
-# 使用服务账号认证（推荐）
-aiplatform.init(
-    project=config['project_id'],
-    location=config['region'],
-    credentials='${KEY_FILE_NAME}'  # 使用服务账号密钥文件
-)
+# 创建模型实例
+model = GenerativeModel("gemini-1.5-pro")
 
-# 测试Gemini API连接
-from vertexai.preview.generative_models import GenerativeModel
-
-model = GenerativeModel(config['config']['gemini_model'])
-response = model.generate_content("你好，世界！")
+# 生成内容
+response = model.generate_content("请解释量子计算的基本原理")
 print(response.text)
 
-# 测试Llama API连接
-try:
-    llama_model = GenerativeModel(config['config']['llama_model'])
-    response = llama_model.generate_content("你好，世界！")
-    print(response.text)
-except Exception as e:
-    print(f"Llama模型错误: {str(e)}")
-    print("可能需要申请访问权限: https://console.cloud.google.com/vertex-ai/publishers/meta/model-garden")
+# 流式响应
+stream_response = model.generate_content(
+    "用简单的语言解释神经网络如何工作",
+    stream=True
+)
+
+for chunk in stream_response:
+    print(chunk.text, end="")
 EOL
   
   # 安全提示
   echo -e "\n${RED}⚠️ 安全提示：${RESET}"
-  echo "1. 请妥善保管您的配置文件，不要泄露"
-  echo "2. 配置文件包含敏感信息（API密钥）"
-  echo "3. 如不慎泄露，请立即删除API密钥："
-  echo "   https://console.cloud.google.com/apis/credentials"
+  echo "1. 请妥善保管您的API密钥，不要泄露"
+  echo "2. 定期轮换密钥：https://console.cloud.google.com/apis/credentials"
+  echo "3. 限制密钥使用范围：https://cloud.google.com/docs/authentication/api-keys"
 }
 
 # 执行主函数
