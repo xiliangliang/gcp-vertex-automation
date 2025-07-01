@@ -1,6 +1,6 @@
 #!/bin/bash
-# 文件名：vertex_setup_interactive_v3.7.sh
-# 功能：交互式创建或配置Vertex AI项目 (已修正API密钥捕获逻辑)
+# 文件名：vertex_setup_interactive_v3.8.sh
+# 功能：交互式创建或配置Vertex AI项目 (修正API密钥异步创建逻辑)
 
 # ======== 配置区 ========
 PROJECT_PREFIX="vertex-api"
@@ -75,26 +75,46 @@ ensure_service_account_and_roles() {
   echo -e "${GREEN}✓ 服务账号和权限配置完成。${RESET}"; return 0
 }
 
-# ===== 函数：生成API密钥和配置文件 (已彻底修复捕获逻辑) =====
+# ===== 函数：生成API密钥和配置文件 (v3.8 - 修正异步创建逻辑) =====
 generate_and_output_config() {
   local project_id=$1; local sa_name=$2; local sa_email="${sa_name}@${project_id}.iam.gserviceaccount.com"
   echo -e "${YELLOW}步骤D: 生成API密钥、服务账号密钥和配置文件...${RESET}"
-  
-  # 步骤1: 创建API密钥并捕获其唯一的资源名称
-  echo " - 步骤D.1: 创建API密钥资源..." >&2
-  local key_name
-  key_name=$(gcloud services api-keys create --display-name="Vertex_Auto_Key" --project="$project_id" --format="value(name)" 2>/dev/null)
-  
-  if [ -z "$key_name" ]; then
-    echo -e "${RED}错误：创建API密钥资源失败。请检查权限。${RESET}" >&2
+
+  # 步骤D.1: 发起创建API密钥的请求，并获取“操作名称”
+  echo " - 步骤D.1: 发起创建API密钥的请求..." >&2
+  local operation_name
+  operation_name=$(gcloud services api-keys create --display-name="Vertex_Auto_Key" --project="$project_id" --format="value(name)" 2>/dev/null)
+
+  if [ -z "$operation_name" ]; then
+    echo -e "${RED}错误：创建API密钥的操作未能启动。请检查权限。${RESET}" >&2
     return 1
   fi
-  echo -e "   ${GREEN}✓ API密钥资源创建成功: ${key_name}${RESET}" >&2
+  echo -e "   ${GREEN}✓ 请求已提交，操作名称: ${operation_name}${RESET}" >&2
 
-  # 步骤2: 使用密钥的资源名称来获取其加密的密钥字符串
-  echo " - 步骤D.2: 获取加密的密钥字符串..." >&2
+  # 步骤D.2: 等待异步操作完成
+  echo " - 步骤D.2: 等待API密钥创建完成 (这可能需要一点时间)..." >&2
+  if ! gcloud services operations wait "$operation_name" --project="$project_id" --timeout=120; then
+      echo -e "${RED}错误：等待API密钥创建操作完成时超时或失败。${RESET}" >&2
+      gcloud services operations describe "$operation_name" --project="$project_id" >&2 # 输出详细错误
+      return 1
+  fi
+  echo -e "   ${GREEN}✓ API密钥资源已成功创建。${RESET}" >&2
+
+  # 步骤D.3: 从已完成的操作中，获取最终的密钥资源名称
+  echo " - 步骤D.3: 获取密钥的最终资源名称..." >&2
+  local final_key_name
+  final_key_name=$(gcloud services operations describe "$operation_name" --project="$project_id" --format="value(response.name)" 2>/dev/null)
+
+  if [ -z "$final_key_name" ]; then
+      echo -e "${RED}错误：无法从已完成的操作中提取最终的密钥资源名称。${RESET}" >&2
+      return 1
+  fi
+  echo -e "   ${GREEN}✓ 成功获取密钥资源名称: ${final_key_name}${RESET}" >&2
+
+  # 步骤D.4: 使用最终的密钥资源名称来获取其加密的密钥字符串
+  echo " - 步骤D.4: 获取加密的密钥字符串..." >&2
   local api_key
-  api_key=$(gcloud services api-keys get-key-string "$key_name" --format="value(keyString)" 2>/dev/null)
+  api_key=$(gcloud services api-keys get-key-string "$final_key_name" --format="value(keyString)" 2>/dev/null)
 
   if [ -z "$api_key" ]; then
     echo -e "${RED}错误：获取密钥字符串失败。${RESET}" >&2
@@ -179,32 +199,6 @@ check_existing_project() {
   echo -e "\n${GREEN}--- 现有项目检查和配置流程全部完成 ---${RESET}"
 }
 
-main() {
-  if [ -z "$CLOUD_SHELL" ]; then echo -e "${RED}错误：请在Google Cloud Shell中运行此脚本。${RESET}"; exit 1; fi
-  if ! command -v jq &> /dev/null; then echo -e "${YELLOW}正在安装jq...${RESET}"; sudo apt-get update -qq > /dev/null && sudo apt-get install -y jq > /dev/null; fi
-  while true; do
-    clear
-    echo -e "${GREEN}=============================================${RESET}"
-    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.7${RESET}"
-    echo -e "${GREEN}=============================================${RESET}"
-    echo -e "\n请选择您要执行的操作：\n"
-    echo -e "  ${YELLOW}1)${RESET} 创建一个全新的Vertex AI项目并生成配置"
-    echo -e "  ${YELLOW}2)${RESET} 检查/修复一个现有项目 (从列表中选择)"
-    echo -e "  ${YELLOW}3)${RESET} 清理本项目中所有自动生成的API密钥"
-    echo -e "  ${YELLOW}4)${RESET} 退出脚本\n"
-    read -p "请输入选项 [1, 2, 3, 4]: " choice
-    case $choice in
-      1) create_new_project ;;
-      2) check_existing_project ;;
-      3) cleanup_keys ;;
-      4) echo -e "\n${BLUE}再见！${RESET}"; exit 0 ;;
-      *) echo -e "\n${RED}无效的选项，请输入 1, 2, 3, 或 4。${RESET}" ;;
-    esac
-    echo -e "\n"; read -p "按 Enter 键返回主菜单..."
-  done
-}
-
-# ===== 新增：清理旧密钥的功能 =====
 cleanup_keys() {
     echo -e "\n${BLUE}--- 开始清理自动生成的API密钥 ---${RESET}"
     select_project_from_list
@@ -242,4 +236,31 @@ cleanup_keys() {
     echo -e "${GREEN}✓ 清理完成！${RESET}"
 }
 
+main() {
+  if [ -z "$CLOUD_SHELL" ]; then echo -e "${RED}错误：请在Google Cloud Shell中运行此脚本。${RESET}"; exit 1; fi
+  if ! command -v jq &> /dev/null; then echo -e "${YELLOW}正在安装jq...${RESET}"; sudo apt-get update -qq > /dev/null && sudo apt-get install -y jq > /dev/null; fi
+  while true; do
+    clear
+    echo -e "${GREEN}=============================================${RESET}"
+    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.8${RESET}"
+    echo -e "${GREEN}=============================================${RESET}"
+    echo -e "\n请选择您要执行的操作：\n"
+    echo -e "  ${YELLOW}1)${RESET} 创建一个全新的Vertex AI项目并生成配置"
+    echo -e "  ${YELLOW}2)${RESET} 检查/修复一个现有项目 (从列表中选择)"
+    echo -e "  ${YELLOW}3)${RESET} 清理本项目中所有自动生成的API密钥"
+    echo -e "  ${YELLOW}4)${RESET} 退出脚本\n"
+    read -p "请输入选项 [1, 2, 3, 4]: " choice
+    case $choice in
+      1) create_new_project ;;
+      2) check_existing_project ;;
+      3) cleanup_keys ;;
+      4) echo -e "\n${BLUE}再见！${RESET}"; exit 0 ;;
+      *) echo -e "\n${RED}无效的选项，请输入 1, 2, 3, 或 4。${RESET}" ;;
+    esac
+    echo -e "\n"; read -p "按 Enter 键返回主菜单..."
+  done
+}
+
+# 脚本主入口
 main
+
