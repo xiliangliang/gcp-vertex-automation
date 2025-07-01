@@ -1,6 +1,6 @@
 #!/bin/bash
-# 文件名：vertex_setup_interactive_v3.8.sh
-# 功能：交互式创建或配置Vertex AI项目 (修正API密钥异步创建逻辑)
+# 文件名：vertex_setup_interactive_v3.9.sh
+# 功能：交互式创建或配置Vertex AI项目 (修正API密钥异步创建逻辑，兼容旧版gcloud)
 
 # ======== 配置区 ========
 PROJECT_PREFIX="vertex-api"
@@ -75,7 +75,7 @@ ensure_service_account_and_roles() {
   echo -e "${GREEN}✓ 服务账号和权限配置完成。${RESET}"; return 0
 }
 
-# ===== 函数：生成API密钥和配置文件 (v3.8 - 修正异步创建逻辑) =====
+# ===== 函数：生成API密钥和配置文件 (v3.9 - 修正异步创建逻辑，兼容旧版gcloud) =====
 generate_and_output_config() {
   local project_id=$1; local sa_name=$2; local sa_email="${sa_name}@${project_id}.iam.gserviceaccount.com"
   echo -e "${YELLOW}步骤D: 生成API密钥、服务账号密钥和配置文件...${RESET}"
@@ -91,11 +91,23 @@ generate_and_output_config() {
   fi
   echo -e "   ${GREEN}✓ 请求已提交，操作名称: ${operation_name}${RESET}" >&2
 
-  # 步骤D.2: 等待异步操作完成
+  # 步骤D.2: 等待异步操作完成 (使用手动轮询以兼容旧版gcloud)
   echo " - 步骤D.2: 等待API密钥创建完成 (这可能需要一点时间)..." >&2
-  if ! gcloud services operations wait "$operation_name" --project="$project_id" --timeout=120; then
-      echo -e "${RED}错误：等待API密钥创建操作完成时超时或失败。${RESET}" >&2
-      gcloud services operations describe "$operation_name" --project="$project_id" >&2 # 输出详细错误
+  local max_retries=12; local wait_seconds=10; local operation_succeeded=false
+  for ((i=1; i<=max_retries; i++)); do
+    local done_status
+    done_status=$(gcloud services operations describe "$operation_name" --project="$project_id" --format="value(done)" 2>/dev/null)
+    if [ "$done_status" = "True" ]; then
+      operation_succeeded=true
+      break
+    fi
+    echo -e "   ${YELLOW}等待中 ($i/$max_retries)...${RESET}" >&2
+    sleep $wait_seconds
+  done
+
+  if [ "$operation_succeeded" != "true" ]; then
+      echo -e "${RED}错误：等待API密钥创建操作完成时超时。${RESET}" >&2
+      gcloud services operations describe "$operation_name" --project="$project_id" >&2
       return 1
   fi
   echo -e "   ${GREEN}✓ API密钥资源已成功创建。${RESET}" >&2
@@ -242,7 +254,7 @@ main() {
   while true; do
     clear
     echo -e "${GREEN}=============================================${RESET}"
-    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.8${RESET}"
+    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.9${RESET}"
     echo -e "${GREEN}=============================================${RESET}"
     echo -e "\n请选择您要执行的操作：\n"
     echo -e "  ${YELLOW}1)${RESET} 创建一个全新的Vertex AI项目并生成配置"
@@ -263,4 +275,3 @@ main() {
 
 # 脚本主入口
 main
-
