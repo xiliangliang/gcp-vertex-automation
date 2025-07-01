@@ -1,5 +1,5 @@
 #!/bin/bash
-# 文件名：vertex_setup_interactive_v3.sh
+# 文件名：vertex_setup_interactive_v3.1.sh
 # 功能：交互式创建或从列表中选择项目来配置Vertex AI
 
 # ======== 配置区 ========
@@ -131,23 +131,47 @@ create_new_project() {
   echo -e "\n${GREEN}--- 新项目创建流程全部完成 ---${RESET}"
 }
 
+# ===== 函数：从列表中选择项目 (已修复) =====
 select_project_from_list() {
-  echo -e "${YELLOW}正在获取您的项目列表...${RESET}"
-  local projects_array=(); while IFS= read -r line; do projects_array+=("$line"); done < <(gcloud projects list --format="value(projectId)")
-  if [ ${#projects_array[@]} -eq 0 ]; then echo -e "${RED}错误：未找到任何项目。${RESET}"; return 1; fi
-  echo -e "\n请从以下列表中选择一个项目进行操作：\n"; local i=1
+  # 将所有用户提示信息重定向到 stderr (>&2)
+  echo -e "${YELLOW}正在获取您的项目列表...${RESET}" >&2
+  
+  local projects_array=()
+  while IFS= read -r line; do
+    projects_array+=("$line")
+  done < <(gcloud projects list --format="value(projectId)")
+
+  if [ ${#projects_array[@]} -eq 0 ]; then
+    echo -e "${RED}错误：未找到任何项目，或者您没有权限列出项目。${RESET}" >&2
+    return 1
+  fi
+
+  echo -e "\n请从以下列表中选择一个项目进行操作：\n" >&2
+  local i=1
   for proj_id in "${projects_array[@]}"; do
     local proj_name=$(gcloud projects describe "$proj_id" --format="value(name)" 2>/dev/null)
-    echo -e "  ${YELLOW}${i})${RESET} ${proj_id} (${BLUE}${proj_name:-无名称}${RESET})"; ((i++))
+    echo -e "  ${YELLOW}${i})${RESET} ${proj_id} (${BLUE}${proj_name:-无名称}${RESET})" >&2
+    ((i++))
   done
-  echo -e "  ${YELLOW}0)${RESET} 取消并返回主菜单"
+  echo -e "  ${YELLOW}0)${RESET} 取消并返回主菜单" >&2
+
   local choice
   while true; do
+    # read 的提示符 -p 默认输出到 stderr，所以不需要修改
     read -p $'\n请输入选项编号 [0-'$((${#projects_array[@]}))']: ' choice
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 0 ] && [ "$choice" -le ${#projects_array[@]} ]; then break; else
-      echo -e "${RED}无效的输入，请输入一个列表中的数字。${RESET}"; fi
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 0 ] && [ "$choice" -le ${#projects_array[@]} ]; then
+      break
+    else
+      echo -e "${RED}无效的输入，请输入一个列表中的数字。${RESET}" >&2
+    fi
   done
-  if [ "$choice" -eq 0 ]; then echo ""; return 0; fi
+
+  if [ "$choice" -eq 0 ]; then
+    echo "" # 返回空字符串表示取消，输出到 stdout
+    return 0
+  fi
+
+  # 这是唯一输出到 stdout 的内容，它将被 $(...) 捕获
   echo "${projects_array[$((choice-1))]}"
 }
 
@@ -176,7 +200,7 @@ main() {
   while true; do
     clear
     echo -e "${GREEN}=============================================${RESET}"
-    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.0${RESET}"
+    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.1${RESET}"
     echo -e "${GREEN}=============================================${RESET}"
     echo -e "\n请选择您要执行的操作：\n"
     echo -e "  ${YELLOW}1)${RESET} 创建一个全新的Vertex AI项目并生成配置"
