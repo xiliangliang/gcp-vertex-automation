@@ -1,5 +1,5 @@
 #!/bin/bash
-# 文件名：vertex_setup_interactive_v3.1.sh
+# 文件名：vertex_setup_interactive_v3.2.sh
 # 功能：交互式创建或从列表中选择项目来配置Vertex AI
 
 # ======== 配置区 ========
@@ -17,14 +17,17 @@ YELLOW="\033[1;33m"
 BLUE="\033[1;34m"
 RESET="\033[0m"
 
+# ======== 全局变量，用于函数返回值 ========
+SELECTED_PROJECT_ID=""
+
 # ==============================================================================
 #
 #  核心函数库 (Core Functions)
 #
 # ==============================================================================
 
+# ... (其他核心函数保持不变，为简洁省略) ...
 generate_random_id() { LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 6; }
-
 get_billing_account() {
   echo -e "${YELLOW}正在获取可用的结算账号...${RESET}"
   BILLING_ACCOUNTS=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" 2>/dev/null)
@@ -32,7 +35,6 @@ get_billing_account() {
   BILLING_ACCOUNT=$(echo "$BILLING_ACCOUNTS" | awk '{print $1}')
   echo -e "${GREEN}✓ 将使用结算账号: ${BLUE}${BILLING_ACCOUNT}${RESET}"; return 0
 }
-
 link_and_verify_billing() {
   local project_id=$1; local billing_account=$2; local max_retries=8; local wait_seconds=15
   echo -e "${YELLOW}步骤A: 检查并关联项目结算...${RESET}"
@@ -49,7 +51,6 @@ link_and_verify_billing() {
   done
   echo -e "${RED}错误：在超时后结算仍未启用。${RESET}"; return 1
 }
-
 ensure_apis_enabled() {
   local project_id=$1
   echo -e "${YELLOW}步骤B: 检查并启用必需的API服务...${RESET}"
@@ -63,7 +64,6 @@ ensure_apis_enabled() {
   done
   echo -e "${GREEN}✓ 所有API均已启用。${RESET}"; echo -e "${YELLOW}等待API服务完全生效（30秒）...${RESET}"; sleep 30; return 0
 }
-
 ensure_service_account_and_roles() {
   local project_id=$1; local sa_name=$2; local sa_email="${sa_name}@${project_id}.iam.gserviceaccount.com"
   echo -e "${YELLOW}步骤C: 检查并配置服务账号及权限...${RESET}"
@@ -75,7 +75,6 @@ ensure_service_account_and_roles() {
   echo " - 分配 'Service Account User' 角色..."; gcloud projects add-iam-policy-binding "$project_id" --member="serviceAccount:${sa_email}" --role="roles/iam.serviceAccountUser" --quiet
   echo -e "${GREEN}✓ 服务账号和权限配置完成。${RESET}"; return 0
 }
-
 generate_and_output_config() {
   local project_id=$1; local sa_name=$2; local sa_email="${sa_name}@${project_id}.iam.gserviceaccount.com"; local max_retries=5; local wait_seconds=12
   echo -e "${YELLOW}步骤D: 生成API密钥、服务账号密钥和配置文件...${RESET}"
@@ -108,6 +107,53 @@ EOL
     echo -e "${YELLOW}自动下载失败，请在左侧文件浏览器中手动下载 '${CONFIG_FILE_NAME}' 和 '${KEY_FILE_NAME}'。${RESET}"; fi
 }
 
+# ===== 函数：从列表中选择项目 (已彻底修复) =====
+# 这个函数不再返回值，而是设置一个全局变量 SELECTED_PROJECT_ID
+select_project_from_list() {
+  # 每次调用时重置全局变量
+  SELECTED_PROJECT_ID=""
+
+  echo -e "${YELLOW}正在获取您的项目列表...${RESET}"
+  
+  local projects_array=()
+  while IFS= read -r line; do
+    projects_array+=("$line")
+  done < <(gcloud projects list --format="value(projectId)")
+
+  if [ ${#projects_array[@]} -eq 0 ]; then
+    echo -e "${RED}错误：未找到任何项目，或者您没有权限列出项目。${RESET}"
+    return 1 # 返回错误码
+  fi
+
+  echo -e "\n请从以下列表中选择一个项目进行操作：\n"
+  local i=1
+  for proj_id in "${projects_array[@]}"; do
+    local proj_name=$(gcloud projects describe "$proj_id" --format="value(name)" 2>/dev/null)
+    echo -e "  ${YELLOW}${i})${RESET} ${proj_id} (${BLUE}${proj_name:-无名称}${RESET})"
+    ((i++))
+  done
+  echo -e "  ${YELLOW}0)${RESET} 取消并返回主菜单"
+
+  local choice
+  while true; do
+    read -p $'\n请输入选项编号 [0-'$((${#projects_array[@]}))']: ' choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 0 ] && [ "$choice" -le ${#projects_array[@]} ]; then
+      break
+    else
+      echo -e "${RED}无效的输入，请输入一个列表中的数字。${RESET}"
+    fi
+  done
+
+  if [ "$choice" -eq 0 ]; then
+    # 用户取消，SELECTED_PROJECT_ID 保持为空
+    return 0 # 返回成功码
+  fi
+
+  # 将选择结果设置到全局变量中
+  SELECTED_PROJECT_ID="${projects_array[$((choice-1))]}"
+  return 0 # 返回成功码
+}
+
 # ==============================================================================
 #
 #  功能实现 (Feature Implementations)
@@ -116,6 +162,7 @@ EOL
 
 create_new_project() {
   echo -e "\n${BLUE}--- 开始执行：创建新Vertex AI项目 ---${RESET}"
+  # ... (此函数无需修改) ...
   local current_projects=$(gcloud projects list --format="value(projectId)" | wc -l)
   if [ "$current_projects" -ge "$MAX_PROJECTS" ]; then echo -e "${RED}错误：已达到项目配额上限 ($MAX_PROJECTS个项目)。${RESET}"; return; fi
   echo -e "${GREEN}✓ 项目配额检查通过 ($current_projects/$MAX_PROJECTS)。${RESET}"
@@ -131,61 +178,40 @@ create_new_project() {
   echo -e "\n${GREEN}--- 新项目创建流程全部完成 ---${RESET}"
 }
 
-# ===== 函数：从列表中选择项目 (已修复) =====
-select_project_from_list() {
-  # 将所有用户提示信息重定向到 stderr (>&2)
-  echo -e "${YELLOW}正在获取您的项目列表...${RESET}" >&2
-  
-  local projects_array=()
-  while IFS= read -r line; do
-    projects_array+=("$line")
-  done < <(gcloud projects list --format="value(projectId)")
-
-  if [ ${#projects_array[@]} -eq 0 ]; then
-    echo -e "${RED}错误：未找到任何项目，或者您没有权限列出项目。${RESET}" >&2
-    return 1
-  fi
-
-  echo -e "\n请从以下列表中选择一个项目进行操作：\n" >&2
-  local i=1
-  for proj_id in "${projects_array[@]}"; do
-    local proj_name=$(gcloud projects describe "$proj_id" --format="value(name)" 2>/dev/null)
-    echo -e "  ${YELLOW}${i})${RESET} ${proj_id} (${BLUE}${proj_name:-无名称}${RESET})" >&2
-    ((i++))
-  done
-  echo -e "  ${YELLOW}0)${RESET} 取消并返回主菜单" >&2
-
-  local choice
-  while true; do
-    # read 的提示符 -p 默认输出到 stderr，所以不需要修改
-    read -p $'\n请输入选项编号 [0-'$((${#projects_array[@]}))']: ' choice
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 0 ] && [ "$choice" -le ${#projects_array[@]} ]; then
-      break
-    else
-      echo -e "${RED}无效的输入，请输入一个列表中的数字。${RESET}" >&2
-    fi
-  done
-
-  if [ "$choice" -eq 0 ]; then
-    echo "" # 返回空字符串表示取消，输出到 stdout
-    return 0
-  fi
-
-  # 这是唯一输出到 stdout 的内容，它将被 $(...) 捕获
-  echo "${projects_array[$((choice-1))]}"
-}
-
+# ===== 功能2：检查现有项目 (已彻底修复) =====
 check_existing_project() {
   echo -e "\n${BLUE}--- 开始执行：检查现有Vertex AI项目 ---${RESET}"
-  local project_id; project_id=$(select_project_from_list)
-  if [ -z "$project_id" ]; then echo -e "\n${YELLOW}操作已取消，返回主菜单。${RESET}"; return; fi
-  echo -e "\n${GREEN}✓ 您已选择项目: ${BLUE}${project_id}${RESET}"; echo -e "${YELLOW}现在将开始检查并配置此项目...${RESET}"
+  
+  # 1. 直接调用函数，它会与用户交互并设置全局变量
+  select_project_from_list
+  
+  # 2. 检查函数是否返回了错误码（例如，没有找到项目）
+  if [ $? -ne 0 ]; then
+    # 错误信息已由函数内部打印，这里直接返回即可
+    return
+  fi
+  
+  # 3. 从全局变量中获取结果
+  local project_id="$SELECTED_PROJECT_ID"
+  
+  # 4. 检查用户是否取消了操作
+  if [ -z "$project_id" ]; then
+    echo -e "\n${YELLOW}操作已取消，返回主菜单。${RESET}"
+    return
+  fi
+
+  echo -e "\n${GREEN}✓ 您已选择项目: ${BLUE}${project_id}${RESET}"
+  echo -e "${YELLOW}现在将开始检查并配置此项目...${RESET}"
+  
+  # 后续流程现在可以安全地使用正确的 project_id
   gcloud config set project "$project_id"
+  
   if ! get_billing_account; then return; fi; local billing_account=$BILLING_ACCOUNT
   if ! link_and_verify_billing "$project_id" "$billing_account"; then return; fi
   if ! ensure_apis_enabled "$project_id"; then return; fi
   if ! ensure_service_account_and_roles "$project_id" "$SERVICE_ACCOUNT_NAME"; then return; fi
   if ! generate_and_output_config "$project_id" "$SERVICE_ACCOUNT_NAME"; then return; fi
+  
   echo -e "\n${GREEN}--- 现有项目检查和配置流程全部完成 ---${RESET}"
 }
 
@@ -200,7 +226,7 @@ main() {
   while true; do
     clear
     echo -e "${GREEN}=============================================${RESET}"
-    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.1${RESET}"
+    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.2${RESET}"
     echo -e "${GREEN}=============================================${RESET}"
     echo -e "\n请选择您要执行的操作：\n"
     echo -e "  ${YELLOW}1)${RESET} 创建一个全新的Vertex AI项目并生成配置"
