@@ -1,9 +1,6 @@
 #!/bin/bash
-# 文件名：vertex_setup_interactive_v3.3.sh
-# 功能：交互式创建或从列表中选择项目来配置Vertex AI，并提供更详细的错误诊断
-
-# ... (所有其他函数和主流程保持不变，只替换 generate_and_output_config 函数) ...
-# 为了方便您，下面是完整的脚本
+# 文件名：vertex_setup_interactive_v3.4.sh
+# 功能：交互式创建或配置Vertex AI项目，并尝试自动修复API密钥权限问题
 
 # ======== 配置区 ========
 PROJECT_PREFIX="vertex-api"
@@ -20,7 +17,7 @@ YELLOW="\033[1;33m"
 BLUE="\033[1;34m"
 RESET="\033[0m"
 
-# ======== 全局变量，用于函数返回值 ========
+# ======== 全局变量 ========
 SELECTED_PROJECT_ID=""
 
 # ==============================================================================
@@ -78,31 +75,42 @@ ensure_service_account_and_roles() {
   echo -e "${GREEN}✓ 服务账号和权限配置完成。${RESET}"; return 0
 }
 
-# ===== 函数：生成API密钥和配置文件 (改进了错误处理) =====
-generate_and_output_config() {
-  local project_id=$1; local sa_name=$2; local sa_email="${sa_name}@${project_id}.iam.gserviceaccount.com"; local max_retries=5; local wait_seconds=12
-  echo -e "${YELLOW}步骤D: 生成API密钥、服务账号密钥和配置文件...${RESET}"
-  
-  echo " - 正在生成API密钥..." >&2
-  local api_key=""
-  local error_log="gcloud_error.log"
+ensure_api_key_admin_permission() {
+  local project_id=$1
+  echo -e "${YELLOW}步骤C.5: 尝试自动授予API密钥管理员权限...${RESET}"
+  local current_user; current_user=$(gcloud config get-value account 2>/dev/null)
+  if [ -z "$current_user" ]; then echo -e "${RED}错误：无法获取当前登录的GCP用户账号。${RESET}"; return 1; fi
+  echo " - 目标用户: ${BLUE}${current_user}${RESET}"; echo " - 目标权限: ${BLUE}API 密钥管理员 (roles/serviceusage.apiKeysAdmin)${RESET}"
+  if gcloud projects add-iam-policy-binding "$project_id" --member="user:${current_user}" --role="roles/serviceusage.apiKeysAdmin" --quiet &>/dev/null; then
+    echo -e " - ${GREEN}✓ 权限已成功授予或已存在。${RESET}"; sleep 5; return 0
+  else
+    echo -e " - ${YELLOW}警告：自动授予权限失败。这通常意味着您不是此项目的所有者。${RESET}"
+    echo -e "   ${YELLOW}脚本将继续尝试，但后续步骤可能因此失败。${RESET}"; return 0
+  fi
+}
 
+generate_and_output_config() {
+  local project_id=$1; local sa_name=$2; local sa_email="${sa_name}@${project_id}.iam.gserviceaccount.com"; local max_retries=3; local wait_seconds=10
+  echo -e "${YELLOW}步骤D: 生成API密钥、服务账号密钥和配置文件...${RESET}"
+  echo " - 正在生成API密钥..." >&2; local api_key=""
   for ((i=1; i<=max_retries; i++)); do
-    api_key=$(gcloud api-keys create --display-name="Vertex_Auto_Key" --project="$project_id" --format="value(keyString)" 2> "$error_log")
-    if [[ "$api_key" == AIzaSy* ]]; then
-      rm -f "$error_log"; echo -e "   ${GREEN}✓ API密钥生成成功。${RESET}" >&2; break
-    fi
+    api_key=$(gcloud api-keys create --display-name="Vertex_Auto_Key" --project="$project_id" --format="value(keyString)" 2>/dev/null)
+    if [[ "$api_key" == AIzaSy* ]]; then echo -e "   ${GREEN}✓ API密钥生成成功。${RESET}" >&2; break; fi
     api_key=""; echo -e "   ${YELLOW}密钥生成失败 ($i/$max_retries)，重试中...${RESET}" >&2; sleep $wait_seconds
   done
-
   if [ -z "$api_key" ]; then
-    echo -e "${RED}错误：最终无法生成API密钥。${RESET}" >&2
-    if [ -f "$error_log" ]; then
-      echo -e "${RED}GCloud返回的详细错误信息：${RESET}" >&2; cat "$error_log" >&2; rm -f "$error_log"
-    fi
-    return 1
+    echo -e "\n${RED}========================= 自动化失败 =========================${RESET}"
+    echo -e "${RED}错误：最终无法生成API密钥。自动化已达到极限。${RESET}"
+    echo -e "\n${YELLOW}原因分析：${RESET}"
+    echo "这几乎总是因为运行此脚本的用户 (${BLUE}$(gcloud config get-value account)${RESET}) 在项目 (${BLUE}${project_id}${RESET}) 中缺少必要的权限。"
+    echo -e "\n${GREEN}最终解决方案（需要手动操作）：${RESET}"
+    echo "请联系您的GCP管理员或项目所有者，为您执行以下操作："
+    echo "1. 打开IAM页面: ${BLUE}https://console.cloud.google.com/iam-admin/iam?project=${project_id}${RESET}"
+    echo "2. 找到您的用户账号，点击编辑。"
+    echo "3. 添加角色: ${BLUE}'API 密钥管理员' (API Keys Admin)${RESET}"
+    echo "4. 保存后，等待2分钟，然后重新运行此脚本。"
+    echo -e "${RED}=============================================================${RESET}"; return 1
   fi
-
   echo " - 正在生成服务账号密钥文件: ${BLUE}${KEY_FILE_NAME}${RESET}"; rm -f "$KEY_FILE_NAME" 2>/dev/null
   gcloud iam service-accounts keys create "$KEY_FILE_NAME" --iam-account="$sa_email" --project="$project_id"
   echo " - 正在创建配置文件: ${BLUE}${CONFIG_FILE_NAME}${RESET}"; rm -f "$CONFIG_FILE_NAME" 2>/dev/null
@@ -159,6 +167,7 @@ create_new_project() {
   if ! link_and_verify_billing "$project_id" "$billing_account"; then return; fi
   if ! ensure_apis_enabled "$project_id"; then return; fi
   if ! ensure_service_account_and_roles "$project_id" "$SERVICE_ACCOUNT_NAME"; then return; fi
+  if ! ensure_api_key_admin_permission "$project_id"; then return; fi
   if ! generate_and_output_config "$project_id" "$SERVICE_ACCOUNT_NAME"; then return; fi
   echo -e "\n${GREEN}--- 新项目创建流程全部完成 ---${RESET}"
 }
@@ -175,6 +184,7 @@ check_existing_project() {
   if ! link_and_verify_billing "$project_id" "$billing_account"; then return; fi
   if ! ensure_apis_enabled "$project_id"; then return; fi
   if ! ensure_service_account_and_roles "$project_id" "$SERVICE_ACCOUNT_NAME"; then return; fi
+  if ! ensure_api_key_admin_permission "$project_id"; then return; fi
   if ! generate_and_output_config "$project_id" "$SERVICE_ACCOUNT_NAME"; then return; fi
   echo -e "\n${GREEN}--- 现有项目检查和配置流程全部完成 ---${RESET}"
 }
@@ -185,7 +195,7 @@ main() {
   while true; do
     clear
     echo -e "${GREEN}=============================================${RESET}"
-    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.3${RESET}"
+    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.4${RESET}"
     echo -e "${GREEN}=============================================${RESET}"
     echo -e "\n请选择您要执行的操作：\n"
     echo -e "  ${YELLOW}1)${RESET} 创建一个全新的Vertex AI项目并生成配置"
