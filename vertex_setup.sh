@@ -164,3 +164,82 @@ create_new_project() {
 }
 
 check_existing_project() {
+  echo -e "\n${BLUE}--- 开始执行：检查现有Vertex AI项目 ---${RESET}"
+  select_project_from_list
+  if [ $? -ne 0 ]; then return; fi
+  local project_id="$SELECTED_PROJECT_ID"
+  if [ -z "$project_id" ]; then echo -e "\n${YELLOW}操作已取消，返回主菜单。${RESET}"; return; fi
+  echo -e "\n${GREEN}✓ 您已选择项目: ${BLUE}${project_id}${RESET}"; echo -e "${YELLOW}现在将开始检查并配置此项目...${RESET}"
+  gcloud config set project "$project_id"
+  if ! get_billing_account; then return; fi; local billing_account=$BILLING_ACCOUNT
+  if ! link_and_verify_billing "$project_id" "$billing_account"; then return; fi
+  if ! ensure_apis_enabled "$project_id"; then return; fi
+  if ! ensure_service_account_and_roles "$project_id" "$SERVICE_ACCOUNT_NAME"; then return; fi
+  if ! generate_and_output_config "$project_id" "$SERVICE_ACCOUNT_NAME"; then return; fi
+  echo -e "\n${GREEN}--- 现有项目检查和配置流程全部完成 ---${RESET}"
+}
+
+main() {
+  if [ -z "$CLOUD_SHELL" ]; then echo -e "${RED}错误：请在Google Cloud Shell中运行此脚本。${RESET}"; exit 1; fi
+  if ! command -v jq &> /dev/null; then echo -e "${YELLOW}正在安装jq...${RESET}"; sudo apt-get update -qq > /dev/null && sudo apt-get install -y jq > /dev/null; fi
+  while true; do
+    clear
+    echo -e "${GREEN}=============================================${RESET}"
+    echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.7${RESET}"
+    echo -e "${GREEN}=============================================${RESET}"
+    echo -e "\n请选择您要执行的操作：\n"
+    echo -e "  ${YELLOW}1)${RESET} 创建一个全新的Vertex AI项目并生成配置"
+    echo -e "  ${YELLOW}2)${RESET} 检查/修复一个现有项目 (从列表中选择)"
+    echo -e "  ${YELLOW}3)${RESET} 清理本项目中所有自动生成的API密钥"
+    echo -e "  ${YELLOW}4)${RESET} 退出脚本\n"
+    read -p "请输入选项 [1, 2, 3, 4]: " choice
+    case $choice in
+      1) create_new_project ;;
+      2) check_existing_project ;;
+      3) cleanup_keys ;;
+      4) echo -e "\n${BLUE}再见！${RESET}"; exit 0 ;;
+      *) echo -e "\n${RED}无效的选项，请输入 1, 2, 3, 或 4。${RESET}" ;;
+    esac
+    echo -e "\n"; read -p "按 Enter 键返回主菜单..."
+  done
+}
+
+# ===== 新增：清理旧密钥的功能 =====
+cleanup_keys() {
+    echo -e "\n${BLUE}--- 开始清理自动生成的API密钥 ---${RESET}"
+    select_project_from_list
+    if [ $? -ne 0 ]; then return; fi
+    local project_id="$SELECTED_PROJECT_ID"
+    if [ -z "$project_id" ]; then echo -e "\n${YELLOW}操作已取消，返回主菜单。${RESET}"; return; fi
+    
+    echo -e "${YELLOW}正在查找项目 '${project_id}' 中所有名为 'Vertex_Auto_Key' 的密钥...${RESET}"
+    local keys_to_delete=()
+    while IFS= read -r line; do
+        keys_to_delete+=("$line")
+    done < <(gcloud services api-keys list --project="$project_id" --filter="displayName=Vertex_Auto_Key" --format="value(name)")
+
+    if [ ${#keys_to_delete[@]} -eq 0 ]; then
+        echo -e "${GREEN}✓ 未找到需要清理的密钥。${RESET}"
+        return
+    fi
+
+    echo -e "${RED}警告：将要删除以下 ${#keys_to_delete[@]} 个API密钥：${RESET}"
+    for key_name in "${keys_to_delete[@]}"; do
+        echo " - $key_name"
+    done
+
+    read -p $'\n您确定要继续吗？(y/N): ' confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo -e "${YELLOW}操作已取消。${RESET}"
+        return
+    fi
+
+    echo -e "${YELLOW}正在删除密钥...${RESET}"
+    for key_name in "${keys_to_delete[@]}"; do
+        echo " - 删除 $key_name"
+        gcloud services api-keys delete "$key_name" --project="$project_id" --quiet
+    done
+    echo -e "${GREEN}✓ 清理完成！${RESET}"
+}
+
+main
