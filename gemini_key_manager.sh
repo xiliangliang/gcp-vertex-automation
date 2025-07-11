@@ -1,8 +1,7 @@
 #!/bin/bash
-# 文件名：gemini_key_manager.sh (全功能最终版)
+# 文件名：gemini_key_manager_final_fix.sh (最终修正版)
+# 创建/查询结算项目，目前结算项目最多5个
 # 功能：一个多功能的Gemini API密钥管理工具。
-#       1. 批量创建新项目并生成密钥 (混合模式)。
-#       2. 检查所有已启用结算的项目，提取或创建密钥。
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -25,7 +24,7 @@ function press_any_key_to_continue() {
 
 function check_dependencies() {
   echo -e "${YELLOW}正在检查依赖工具...${RESET}"
-  for tool in gcloud jq column; do
+  for tool in gcloud jq column sed; do
     if ! command -v "$tool" &> /dev/null; then
       error_exit "${tool} CLI 未安装。请先安装它。"
     fi
@@ -85,7 +84,8 @@ function hybrid_batch_creator_flow() {
     if ! gcloud services enable generativelanguage.googleapis.com --project="$PROJECT_ID" --quiet; then
       echo -e "  ${RED}✗ 启用API失败。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},API启用失败\n"; continue
     fi
-    API_KEY=$(gcloud beta services api-keys create --display-name="Hybrid_Batch_Key_$(date +%s)" --project="$PROJECT_ID" --api-target=service=generativelanguage.googleapis.com --format="value(keyString)")
+    # 使用绝对可靠的方式提取密钥
+    API_KEY=$(gcloud beta services api-keys create --display-name="Hybrid_Batch_Key_$(date +%s)" --project="$PROJECT_ID" --api-target=service=generativelanguage.googleapis.com --format="json" | sed -n 's/.*Result: //p' | jq -r '.keyString')
     if [[ "$API_KEY" == AIzaSy* ]]; then
       echo -e "  ${GREEN}✓ 密钥生成成功！${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},${API_KEY}\n"
     else
@@ -113,32 +113,31 @@ function process_existing_projects_flow() {
   for PROJECT_ID in $ALL_PROJECTS; do
     echo -ne "\r${YELLOW}  -> 正在检查项目: ${BLUE}${PROJECT_ID}${RESET}                    "
     if [[ "$(gcloud beta billing projects describe "$PROJECT_ID" --format="value(billingEnabled)" 2>/dev/null)" != "True" ]]; then
-      continue # 跳过未启用结算的项目
+      continue
     fi
     
     echo -e "\r${GREEN}  ✓ 发现已启用结算的项目: ${BLUE}${PROJECT_ID}${RESET}"
     
-    # 检查是否已有Gemini密钥
     echo "    (1/2) 正在检查现有密钥..."
-    EXISTING_KEY=$(gcloud beta services api-keys list --project="$PROJECT_ID" --format=json | jq -r '.[] | select(.restrictions.apiTargets[].service == "generativelanguage.googleapis.com") | .keyString' | head -n 1)
+    # --- 修正 #1: 使用 gcloud --filter 直接获取密钥，不再依赖复杂的jq ---
+    EXISTING_KEY=$(gcloud beta services api-keys list --project="$PROJECT_ID" --filter='restrictions.apiTargets.service="generativelanguage.googleapis.com"' --format='value(keyString)' | head -n 1)
 
-    if [ -n "$EXISTING_KEY" ]; then
+    if [[ "$EXISTING_KEY" == AIzaSy* ]]; then
       echo -e "    ${GREEN}✓ 已找到现有密钥。${RESET}"
       FINAL_SUMMARY+="${PROJECT_ID},${EXISTING_KEY}\n"
     else
       echo "    (2/2) 未找到现有密钥，正在创建新的..."
       if ! gcloud services enable generativelanguage.googleapis.com --project="$PROJECT_ID" --quiet; then
-        echo -e "    ${RED}✗ 启用API失败，跳过。${RESET}"
-        FINAL_SUMMARY+="${PROJECT_ID},API启用失败\n"
-        continue
+        echo -e "    ${RED}✗ 启用API失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},API启用失败\n"; continue
       fi
-      NEW_KEY=$(gcloud beta services api-keys create --display-name="Managed_Gemini_Key_$(date +%s)" --project="$PROJECT_ID" --api-target=service=generativelanguage.googleapis.com --format="value(keyString)")
+      # --- 修正 #2: 使用 sed 和 jq 组合拳，强制从带前缀的输出中提取纯净的密钥 ---
+      NEW_KEY=$(gcloud beta services api-keys create --display-name="Managed_Gemini_Key_$(date +%s)" --project="$PROJECT_ID" --api-target=service=generativelanguage.googleapis.com --format="json" | sed -n 's/.*Result: //p' | jq -r '.keyString' 2>/dev/null)
+      
       if [[ "$NEW_KEY" == AIzaSy* ]]; then
         echo -e "    ${GREEN}✓ 新密钥创建成功！${RESET}"
         FINAL_SUMMARY+="${PROJECT_ID},${NEW_KEY} (新创建)\n"
       else
-        echo -e "    ${RED}✗ 新密钥创建失败。${RESET}"
-        FINAL_SUMMARY+="${PROJECT_ID},密钥创建失败\n"
+        echo -e "    ${RED}✗ 新密钥创建失败。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},密钥创建失败\n"
       fi
     fi
   done
@@ -153,7 +152,7 @@ function process_existing_projects_flow() {
 
 function main_menu() {
   clear
-  echo -e "${YELLOW}========== Gemini API 密钥管理器 (全功能版) ==========${RESET}"
+  echo -e "${YELLOW}========== Gemini API 密钥管理器 (最终修正版) ==========${RESET}"
   echo -e "${GREEN}请选择您要执行的操作:${RESET}"
   echo "--------------------------------------------------------"
   echo -e "  ${BLUE}1.${RESET} 批量创建新项目并生成密钥"
@@ -175,7 +174,4 @@ function main() {
   check_dependencies
   while true; do
     main_menu
-  done
-}
-
-main
+  
