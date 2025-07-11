@@ -151,3 +151,99 @@ function create_single_key_flow() {
   else
     echo -e "${RED}❌ API密钥生成失败！请检查权限或结算状态。${RESET}"
   fi
+}
+
+function create_batch_keys_flow() {
+  echo -e "\n${YELLOW}正在获取可用的结算账户列表...${RESET}"
+  
+  # --- 这是被修正的一行 ---
+  # 将 DISPLAY_NAME 修改为 NAME
+  BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="value(ACCOUNT_ID, NAME)")
+  # --- 修正结束 ---
+  
+  if [ -z "$BILLING_ACCOUNTS" ]; then
+    echo -e "${RED}错误：未找到任何有效的结算账户。${RESET}"
+    echo -e "${YELLOW}如果确认您有结算账户但此处未显示，可能是权限问题。${RESET}"
+    echo -e "${YELLOW}请确保您的账号 (${BLUE}$(gcloud config get-value account)${YELLOW}) 拥有结算账户的 'Billing Account Viewer' 角色。${RESET}"
+    return
+  fi
+  
+  echo "发现以下有效的结算账户:"; echo -e "${BLUE}"; awk '{print NR, $0}' <<< "$BILLING_ACCOUNTS"; echo -e "${RESET}"
+  read -p "请选择要用于新项目的结算账户编号: " CHOICE
+  
+  SELECTED_BILLING_ACCOUNT_ID=$(echo "$BILLING_ACCOUNTS" | awk -v choice="$CHOICE" 'NR==choice {print $1}')
+  if [ -z "$SELECTED_BILLING_ACCOUNT_ID" ]; then echo -e "${RED}无效的选择。${RESET}"; return; fi
+  echo -e "${GREEN}✓ 已选择结算账户: ${BLUE}${SELECTED_BILLING_ACCOUNT_ID}${RESET}"
+
+  read -p "您想创建多少个新项目? " PROJECT_COUNT
+  if ! [[ "$PROJECT_COUNT" =~ ^[1-9][0-9]*$ ]]; then echo -e "${RED}请输入一个大于0的有效数字。${RESET}"; return; fi
+  
+  FINAL_SUMMARY="项目ID,API密钥\n"; BASE_PROJECT_NAME="gemini-batch-$(date +%Y%m%d)"
+  
+  for i in $(seq 1 "$PROJECT_COUNT"); do
+    PROJECT_ID="${BASE_PROJECT_NAME}-$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)"
+    echo -e "\n${YELLOW}--- [${i}/${PROJECT_COUNT}] 正在处理项目: ${BLUE}${PROJECT_ID}${RESET} ---"
+    
+    echo "  (1/4) 正在创建项目..."
+    if ! gcloud projects create "$PROJECT_ID" --quiet; then
+      echo -e "  ${RED}项目创建失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},项目创建失败\n"; continue; fi
+    
+    echo "  (2/4) 正在关联结算账户..."
+    if ! gcloud beta billing projects link "$PROJECT_ID" --billing-account="$SELECTED_BILLING_ACCOUNT_ID" --quiet; then
+      echo -e "  ${RED}关联结算失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},关联结算失败\n"; continue; fi
+    
+    echo "  (3/4) 正在启用 API..."; sleep 5
+    if ! gcloud services enable generativelanguage.googleapis.com --project="$PROJECT_ID" --quiet; then
+      echo -e "  ${RED}启用API失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},API启用失败\n"; continue; fi
+    
+    echo "  (4/4) 正在生成API密钥..."
+    API_KEY=$(gcloud beta services api-keys create --display-name="Batch_Gemini_Key_$(date +%s)" --project="$PROJECT_ID" --api-target=service=generativelanguage.googleapis.com --format="json(keyString)" | jq -r '.keyString')
+
+    if [[ "$API_KEY" == AIzaSy* ]]; then
+      echo -e "  ${GREEN}✓ API密钥生成成功！${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},${API_KEY}\n"
+    else
+      echo -e "  ${RED}API密钥生成失败。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},密钥生成失败\n"
+    fi
+  done
+
+  echo -e "\n\n${GREEN}✅ 所有任务完成！摘要如下：${RESET}"
+  echo "====================================================================================="
+  echo -e "${FINAL_SUMMARY}" | column -t -s ','
+  echo "====================================================================================="
+}
+
+# ======== 主菜单和主函数 ========
+
+function main_menu() {
+  clear
+  echo -e "${YELLOW}========== Gemini API 密钥管理器 ==========${RESET}"
+  echo -e "${GREEN}请选择您要执行的操作:${RESET}"
+  echo "-------------------------------------------"
+  echo -e "  ${BLUE}1.${RESET} 创建新的API密钥 (单个项目)"
+  echo -e "  ${BLUE}2.${RESET} 批量创建项目和密钥"
+  echo "-------------------------------------------"
+  echo -e "  ${BLUE}3.${RESET} 查询单个项目的API密钥"
+  echo -e "  ${BLUE}4.${RESET} 查询所有项目的API密钥"
+  echo "-------------------------------------------"
+  echo -e "  ${RED}5.${RESET} 退出"
+  echo "==========================================="
+  read -p "请输入选项 [1-5]: " CHOICE
+  
+  case $CHOICE in
+    1) create_single_key_flow; press_any_key_to_continue ;;
+    2) create_batch_keys_flow; press_any_key_to_continue ;;
+    3) query_single_project_keys; press_any_key_to_continue ;;
+    4) query_all_projects_keys; press_any_key_to_continue ;;
+    5) echo -e "\n${GREEN}感谢使用，再见！${RESET}"; exit 0 ;;
+    *) echo -e "\n${RED}无效的输入，请输入 1 到 5 之间的数字。${RESET}"; sleep 2 ;;
+  esac
+}
+
+function main() {
+  check_dependencies
+  while true; do
+    main_menu
+  done
+}
+
+main
