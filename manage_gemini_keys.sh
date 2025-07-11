@@ -95,9 +95,8 @@ function query_all_projects_keys() {
 
 # ======== 创建功能模块 ========
 
-# 功能：为单个项目创建密钥
 function create_single_key_flow() {
-  # 1. 选择或创建项目
+  # ... (此部分逻辑不变) ...
   echo -e "\n${YELLOW}正在获取GCP项目列表...${RESET}"
   PROJECT_LIST=$(gcloud projects list --format="value(projectId,name)" --sort-by=projectId)
   
@@ -131,7 +130,6 @@ function create_single_key_flow() {
   echo -e "${GREEN}✓ 已选择项目: ${BLUE}${PROJECT_ID}${RESET}"
   gcloud config set project "$PROJECT_ID" --quiet || { echo -e "${RED}设置项目失败。${RESET}"; return; }
 
-  # 2. 检查结算
   BILLING_ENABLED=$(gcloud beta billing projects describe "$PROJECT_ID" --format="value(billingEnabled)")
   if [[ "$BILLING_ENABLED" == "False" ]]; then
     echo -e "${RED}警告: 项目 ${BLUE}${PROJECT_ID}${RESET}${RED} 未关联结算账户。${RESET}"
@@ -140,7 +138,6 @@ function create_single_key_flow() {
     if [[ "$CONTINUE_ANYWAY" != "y" && "$CONTINUE_ANYWAY" != "Y" ]]; then return; fi
   fi
 
-  # 3. 启用API并创建密钥
   echo -e "\n${YELLOW}正在启用 Generative Language API...${RESET}"
   gcloud services enable generativelanguage.googleapis.com --project="$PROJECT_ID" --quiet || { echo -e "${RED}启用API失败。${RESET}"; return; }
   echo -e "${GREEN}✓ API已启用。${RESET}"
@@ -150,101 +147,7 @@ function create_single_key_flow() {
 
   if [[ "$API_KEY" == AIzaSy* ]]; then
     echo -e "\n${GREEN}✅ API密钥生成成功！${RESET}"
-    echo "========================================"
-    echo -e "${BLUE}项目ID:${RESET} ${PROJECT_ID}"
-    echo -e "${BLUE}API密钥:${RESET} ${API_KEY}"
-    echo "========================================"
+    echo "========================================"; echo -e "${BLUE}项目ID:${RESET} ${PROJECT_ID}"; echo -e "${BLUE}API密钥:${RESET} ${API_KEY}"; echo "========================================"
   else
     echo -e "${RED}❌ API密钥生成失败！请检查权限或结算状态。${RESET}"
   fi
-}
-
-# 功能：批量创建项目和密钥
-function create_batch_keys_flow() {
-  # 1. 选择结算账户
-  echo -e "\n${YELLOW}正在获取可用的结算账户列表...${RESET}"
-  BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="value(ACCOUNT_ID,DISPLAY_NAME)")
-  if [ -z "$BILLING_ACCOUNTS" ]; then echo -e "${RED}未找到任何有效的结算账户。${RESET}"; return; fi
-  
-  echo "发现以下有效的结算账户:"; echo -e "${BLUE}"; awk '{print NR, $0}' <<< "$BILLING_ACCOUNTS"; echo -e "${RESET}"
-  read -p "请选择要用于新项目的结算账户编号: " CHOICE
-  
-  SELECTED_BILLING_ACCOUNT_ID=$(echo "$BILLING_ACCOUNTS" | awk -v choice="$CHOICE" 'NR==choice {print $1}')
-  if [ -z "$SELECTED_BILLING_ACCOUNT_ID" ]; then echo -e "${RED}无效的选择。${RESET}"; return; fi
-  echo -e "${GREEN}✓ 已选择结算账户: ${BLUE}${SELECTED_BILLING_ACCOUNT_ID}${RESET}"
-
-  # 2. 批量创建
-  read -p "您想创建多少个新项目? " PROJECT_COUNT
-  if ! [[ "$PROJECT_COUNT" =~ ^[1-9][0-9]*$ ]]; then echo -e "${RED}请输入一个大于0的有效数字。${RESET}"; return; fi
-  
-  FINAL_SUMMARY="项目ID,API密钥\n"; BASE_PROJECT_NAME="gemini-batch-$(date +%Y%m%d)"
-  
-  for i in $(seq 1 "$PROJECT_COUNT"); do
-    PROJECT_ID="${BASE_PROJECT_NAME}-$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)"
-    echo -e "\n${YELLOW}--- [${i}/${PROJECT_COUNT}] 正在处理项目: ${BLUE}${PROJECT_ID}${RESET} ---"
-    
-    echo "  (1/4) 正在创建项目..."
-    if ! gcloud projects create "$PROJECT_ID" --quiet; then
-      echo -e "  ${RED}项目创建失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},项目创建失败\n"; continue; fi
-    
-    echo "  (2/4) 正在关联结算账户..."
-    if ! gcloud beta billing projects link "$PROJECT_ID" --billing-account="$SELECTED_BILLING_ACCOUNT_ID" --quiet; then
-      echo -e "  ${RED}关联结算失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},关联结算失败\n"; continue; fi
-    
-    echo "  (3/4) 正在启用 API..."; sleep 5 # 等待项目和结算信息同步
-    if ! gcloud services enable generativelanguage.googleapis.com --project="$PROJECT_ID" --quiet; then
-      echo -e "  ${RED}启用API失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},API启用失败\n"; continue; fi
-    
-    echo "  (4/4) 正在生成API密钥..."
-    API_KEY=$(gcloud beta services api-keys create --display-name="Batch_Gemini_Key_$(date +%s)" --project="$PROJECT_ID" --api-target=service=generativelanguage.googleapis.com --format="json(keyString)" | jq -r '.keyString')
-
-    if [[ "$API_KEY" == AIzaSy* ]]; then
-      echo -e "  ${GREEN}✓ API密钥生成成功！${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},${API_KEY}\n"
-    else
-      echo -e "  ${RED}API密钥生成失败。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},密钥生成失败\n"
-    fi
-  done
-
-  echo -e "\n\n${GREEN}✅ 所有任务完成！摘要如下：${RESET}"
-  echo "====================================================================================="
-  echo -e "${FINAL_SUMMARY}" | column -t -s ','
-  echo "====================================================================================="
-}
-
-# ======== 主菜单和主函数 ========
-
-function main_menu() {
-  clear
-  echo -e "${YELLOW}========== Gemini API 密钥管理器 ==========${RESET}"
-  echo -e "${GREEN}请选择您要执行的操作:${RESET}"
-  echo "-------------------------------------------"
-  echo -e "  ${BLUE}1.${RESET} 创建新的API密钥 (单个项目)"
-  echo -e "  ${BLUE}2.${RESET} 批量创建项目和密钥"
-  echo "-------------------------------------------"
-  echo -e "  ${BLUE}3.${RESET} 查询单个项目的API密钥"
-  echo -e "  ${BLUE}4.${RESET} 查询所有项目的API密钥"
-  echo "-------------------------------------------"
-  echo -e "  ${RED}5.${RESET} 退出"
-  echo "==========================================="
-  read -p "请输入选项 [1-5]: " CHOICE
-  
-  case $CHOICE in
-    1) create_single_key_flow; press_any_key_to_continue ;;
-    2) create_batch_keys_flow; press_any_key_to_continue ;;
-    3) query_single_project_keys; press_any_key_to_continue ;;
-    4) query_all_projects_keys; press_any_key_to_continue ;;
-    5) echo -e "\n${GREEN}感谢使用，再见！${RESET}"; exit 0 ;;
-    *) echo -e "\n${RED}无效的输入，请输入 1 到 5 之间的数字。${RESET}"; sleep 2 ;;
-  esac
-}
-
-# 主执行逻辑
-function main() {
-  check_dependencies
-  while true; do
-    main_menu
-  done
-}
-
-# 运行主函数
-main
