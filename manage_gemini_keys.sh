@@ -1,9 +1,8 @@
 #!/bin/bash
-# 文件名：manage_gemini_keys.sh
-# 功能：一个多功能的Gemini API密钥管理工具。
-#       支持：1. 为单个项目创建密钥
-#             2. 批量创建项目并生成密钥
-#             3. 查询单个或所有项目的现有密钥
+# 文件名：manage_gemini_keys.sh (最终健壮版)
+# ... (其他部分代码与上一版相同，只修改 create_batch_keys_flow 函数) ...
+
+# ... (此处省略相同的函数: 颜色定义, 辅助函数, 查询函数, 单项目创建函数) ...
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -156,15 +155,19 @@ function create_single_key_flow() {
 function create_batch_keys_flow() {
   echo -e "\n${YELLOW}正在获取可用的结算账户列表...${RESET}"
   
-  # --- 这是被修正的一行 ---
-  # 将 DISPLAY_NAME 修改为 NAME
+  # --- 这是被修正的部分 (更健壮) ---
+  # 首先尝试使用 NAME 字段，这是您环境中使用的字段
   BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="value(ACCOUNT_ID, NAME)")
+  # 如果上面命令返回空，则尝试使用 DISPLAY_NAME 作为备用方案
+  if [ -z "$BILLING_ACCOUNTS" ]; then
+      BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="value(ACCOUNT_ID, DISPLAY_NAME)")
+  fi
   # --- 修正结束 ---
   
   if [ -z "$BILLING_ACCOUNTS" ]; then
     echo -e "${RED}错误：未找到任何有效的结算账户。${RESET}"
-    echo -e "${YELLOW}如果确认您有结算账户但此处未显示，可能是权限问题。${RESET}"
-    echo -e "${YELLOW}请确保您的账号 (${BLUE}$(gcloud config get-value account)${YELLOW}) 拥有结算账户的 'Billing Account Viewer' 角色。${RESET}"
+    echo -e "${YELLOW}这通常是由于权限不足导致的。请确保您的账号 (${BLUE}$(gcloud config get-value account)${YELLOW}) 拥有结算账户的 'Billing Account Viewer' 角色。${RESET}"
+    echo -e "${YELLOW}请让结算管理员为您添加权限，或尝试我们之前讨论的授权步骤。${RESET}"
     return
   fi
   
