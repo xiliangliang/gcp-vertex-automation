@@ -1,5 +1,5 @@
 #!/bin/bash
-# 文件名：manage_gemini_keys.sh (临时文件最终修复版)
+# 文件名：manage_gemini_keys.sh (最终修复版)
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -12,8 +12,6 @@ RESET="\033[0m"
 
 function error_exit() {
   echo -e "\n${RED}❌ 错误: $1${RESET}\n"
-  # 在退出前清理可能残留的临时文件
-  rm -f /tmp/billing_accounts_*.tmp
   exit 1
 }
 
@@ -24,7 +22,7 @@ function press_any_key_to_continue() {
 
 function check_dependencies() {
   echo -e "${YELLOW}正在检查依赖工具...${RESET}"
-  for tool in gcloud jq column mktemp; do
+  for tool in gcloud jq column; do
     if ! command -v "$tool" &> /dev/null; then
       error_exit "${tool} CLI 未安装。请先安装它。 (例如: sudo apt-get install ${tool} 或 brew install ${tool})"
     fi
@@ -94,9 +92,6 @@ function query_all_projects_keys() {
 # ======== 创建功能模块 ========
 
 function create_single_key_flow() {
-  # ... (此部分逻辑不变，此处省略以保持清晰) ...
-  # ... (This section is unchanged and omitted for clarity) ...
-  # NOTE: The full code is below, this is just a comment.
   echo -e "\n${YELLOW}正在获取GCP项目列表...${RESET}"
   PROJECT_LIST=$(gcloud projects list --format="value(projectId,name)" --sort-by=projectId)
   
@@ -154,34 +149,59 @@ function create_single_key_flow() {
 }
 
 function create_batch_keys_flow() {
-  echo -e "\n${YELLOW}正在获取可用的结算账户列表...${RESET}"
+  echo -e "\n${YELLOW}正在获取结算账户列表...${RESET}"
   
-  # --- 终极绕过方案: 使用临时文件 ---
-  # 创建一个安全的临时文件
-  TEMP_FILE=$(mktemp "/tmp/billing_accounts_XXXXXX.tmp")
+  # 获取所有结算账户（不移除任何账户）
+  BILLING_ACCOUNTS_JSON=$(gcloud beta billing accounts list --format=json)
   
-  # 让 gcloud 命令直接将输出重定向到临时文件
-  gcloud beta billing accounts list --filter='OPEN' --format="table(ACCOUNT_ID, displayName)" > "$TEMP_FILE"
-  
-  # 从临时文件中读取内容
-  RAW_GCLOUD_OUTPUT=$(<"$TEMP_FILE")
-
-  # 读取后立即删除临时文件，确保安全
-  rm -f "$TEMP_FILE"
-  
-  # 后续逻辑和之前一样，去掉表头
-  BILLING_ACCOUNTS=$(echo "$RAW_GCLOUD_OUTPUT" | awk 'NR>1')
-  # --- 方案结束 ---
-  
-  if [ -z "$BILLING_ACCOUNTS" ]; then
-    error_exit "通过临时文件方式依然未能获取到结算账户列表。这是一个非常罕见的问题，请检查gcloud核心安装或Cloud Shell环境本身。"
+  if [ -z "$BILLING_ACCOUNTS_JSON" ] || [ "$BILLING_ACCOUNTS_JSON" = "[]" ]; then
+    echo -e "${YELLOW}无法自动获取结算账户列表，请手动输入结算账户ID。${RESET}"
+    echo -e "${YELLOW}结算账户ID格式为: billingAccounts/XXXXXX-XXXXXX-XXXXXX${RESET}"
+    read -p "请输入结算账户ID: " SELECTED_BILLING_ACCOUNT_ID
+  else
+    # 解析并显示结算账户
+    ACCOUNT_IDS=()
+    COUNT=0
+    echo -e "${GREEN}发现以下结算账户:${RESET}"
+    
+    while IFS=$'\n' read -r line; do
+      name=$(jq -r '.name' <<< "$line")
+      displayName=$(jq -r '.displayName' <<< "$line")
+      open=$(jq -r '.open' <<< "$line")
+      
+      COUNT=$((COUNT+1))
+      ACCOUNT_IDS+=("$name")
+      
+      if [ "$open" = "true" ]; then
+        status="${GREEN}开启${RESET}"
+      else
+        status="${RED}关闭${RESET}"
+      fi
+      
+      echo -e "${BLUE}${COUNT}.${RESET} ${displayName} (${status}) - ${name}"
+    done < <(echo "$BILLING_ACCOUNTS_JSON" | jq -c '.[]')
+    
+    echo -e "${RESET}"
+    read -p "请选择要用于新项目的结算账户编号 (或输入 'm' 手动输入): " CHOICE
+    
+    if [[ "$CHOICE" == "m" || "$CHOICE" == "M" ]]; then
+      echo -e "${YELLOW}结算账户ID格式为: billingAccounts/XXXXXX-XXXXXX-XXXXXX${RESET}"
+      read -p "请输入结算账户ID: " SELECTED_BILLING_ACCOUNT_ID
+    elif [[ "$CHOICE" -ge 1 && "$CHOICE" -le "$COUNT" ]]; then
+      SELECTED_BILLING_ACCOUNT_ID=${ACCOUNT_IDS[$((CHOICE-1))]}
+      
+      # 检查账户状态
+      account_status=$(echo "$BILLING_ACCOUNTS_JSON" | jq -r ".[$((CHOICE-1))].open")
+      if [ "$account_status" != "true" ]; then
+        echo -e "${RED}警告：您选择的结算账户已关闭，无法用于新项目！${RESET}"
+        return
+      fi
+    else
+      echo -e "${RED}无效的选择。${RESET}"
+      return
+    fi
   fi
-  
-  echo "发现以下有效的结算账户:"; echo -e "${BLUE}"; awk '{print NR, $0}' <<< "$BILLING_ACCOUNTS"; echo -e "${RESET}"
-  read -p "请选择要用于新项目的结算账户编号: " CHOICE
-  
-  SELECTED_BILLING_ACCOUNT_ID=$(echo "$BILLING_ACCOUNTS" | awk -v choice="$CHOICE" 'NR==choice {print $1}')
-  if [ -z "$SELECTED_BILLING_ACCOUNT_ID" ]; then echo -e "${RED}无效的选择。${RESET}"; return; fi
+
   echo -e "${GREEN}✓ 已选择结算账户: ${BLUE}${SELECTED_BILLING_ACCOUNT_ID}${RESET}"
 
   read -p "您想创建多少个新项目? " PROJECT_COUNT
