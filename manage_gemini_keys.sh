@@ -1,5 +1,5 @@
 #!/bin/bash
-# 文件名：manage_gemini_keys.sh (最终修复版)
+# 文件名：manage_gemini_keys.sh (临时文件最终修复版)
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -12,6 +12,8 @@ RESET="\033[0m"
 
 function error_exit() {
   echo -e "\n${RED}❌ 错误: $1${RESET}\n"
+  # 在退出前清理可能残留的临时文件
+  rm -f /tmp/billing_accounts_*.tmp
   exit 1
 }
 
@@ -22,7 +24,7 @@ function press_any_key_to_continue() {
 
 function check_dependencies() {
   echo -e "${YELLOW}正在检查依赖工具...${RESET}"
-  for tool in gcloud jq column; do
+  for tool in gcloud jq column mktemp; do
     if ! command -v "$tool" &> /dev/null; then
       error_exit "${tool} CLI 未安装。请先安装它。 (例如: sudo apt-get install ${tool} 或 brew install ${tool})"
     fi
@@ -92,6 +94,9 @@ function query_all_projects_keys() {
 # ======== 创建功能模块 ========
 
 function create_single_key_flow() {
+  # ... (此部分逻辑不变，此处省略以保持清晰) ...
+  # ... (This section is unchanged and omitted for clarity) ...
+  # NOTE: The full code is below, this is just a comment.
   echo -e "\n${YELLOW}正在获取GCP项目列表...${RESET}"
   PROJECT_LIST=$(gcloud projects list --format="value(projectId,name)" --sort-by=projectId)
   
@@ -151,47 +156,25 @@ function create_single_key_flow() {
 function create_batch_keys_flow() {
   echo -e "\n${YELLOW}正在获取可用的结算账户列表...${RESET}"
   
-  # --- 终极修复版 ---
-  # 'displayName' 是官方文档中最标准的字段名，我们优先使用它。
-  # 并且我们直接使用 table 格式，让 gcloud 自己处理列名，避免兼容性问题。
-  BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="table(ACCOUNT_ID, displayName)")
+  # --- 终极绕过方案: 使用临时文件 ---
+  # 创建一个安全的临时文件
+  TEMP_FILE=$(mktemp "/tmp/billing_accounts_XXXXXX.tmp")
+  
+  # 让 gcloud 命令直接将输出重定向到临时文件
+  gcloud beta billing accounts list --filter='OPEN' --format="table(ACCOUNT_ID, displayName)" > "$TEMP_FILE"
+  
+  # 从临时文件中读取内容
+  RAW_GCLOUD_OUTPUT=$(<"$TEMP_FILE")
 
-  # 我们需要去掉 gcloud table 格式的第一行表头 (HEADER)
-  # awk 'NR>1' 的作用就是从第二行开始打印，完美去掉表头
-# --- 终极诊断模式 ---
-echo -e "\n${YELLOW}--- 开始进入诊断模式 ---${RESET}"
-
-echo -e "\n${BLUE}步骤 1: 直接执行 gcloud 命令...${RESET}"
-RAW_GCLOUD_OUTPUT=$(gcloud beta billing accounts list --filter='OPEN' --format="table(ACCOUNT_ID, displayName)")
-
-echo -e "\n${BLUE}步骤 2: 打印 gcloud 命令的原始输出 (在两个'===='之间):${RESET}"
-echo "===="
-echo "${RAW_GCLOUD_OUTPUT}"
-echo "===="
-
-echo -e "\n${BLUE}步骤 3: 检查原始输出变量的长度...${RESET}"
-echo "原始输出 (RAW_GCLOUD_OUTPUT) 的字符长度是: ${#RAW_GCLOUD_OUTPUT}"
-
-echo -e "\n${BLUE}步骤 4: 用 awk 去掉表头...${RESET}"
-BILLING_ACCOUNTS=$(echo "${RAW_GCLOUD_OUTPUT}" | awk 'NR>1')
-
-echo -e "\n${BLUE}步骤 5: 打印经过 awk 处理后的最终内容 (在两个'===='之间):${RESET}"
-echo "===="
-echo "${BILLING_ACCOUNTS}"
-echo "===="
-
-echo -e "\n${BLUE}步骤 6: 检查最终变量的长度...${RESET}"
-echo "最终内容 (BILLING_ACCOUNTS) 的字符长度是: ${#BILLING_ACCOUNTS}"
-
-echo -e "\n${YELLOW}--- 诊断模式结束 ---\n${RESET}"
-# --- 诊断结束 ---
-  # --- 修复结束 ---
+  # 读取后立即删除临时文件，确保安全
+  rm -f "$TEMP_FILE"
+  
+  # 后续逻辑和之前一样，去掉表头
+  BILLING_ACCOUNTS=$(echo "$RAW_GCLOUD_OUTPUT" | awk 'NR>1')
+  # --- 方案结束 ---
   
   if [ -z "$BILLING_ACCOUNTS" ]; then
-    echo -e "${RED}错误：未找到任何有效的结算账户。${RESET}"
-    echo -e "${YELLOW}这通常是由于权限不足导致的。请确保您的账号 (${BLUE}$(gcloud config get-value account)${YELLOW}) 拥有结算账户的 'Billing Account Viewer' 角色。${RESET}"
-    echo -e "${YELLOW}请让结算管理员为您添加权限，或尝试我们之前讨论的授权步骤。${RESET}"
-    return
+    error_exit "通过临时文件方式依然未能获取到结算账户列表。这是一个非常罕见的问题，请检查gcloud核心安装或Cloud Shell环境本身。"
   fi
   
   echo "发现以下有效的结算账户:"; echo -e "${BLUE}"; awk '{print NR, $0}' <<< "$BILLING_ACCOUNTS"; echo -e "${RESET}"
