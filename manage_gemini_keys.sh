@@ -158,7 +158,33 @@ function create_batch_keys_flow() {
 
   # 我们需要去掉 gcloud table 格式的第一行表头 (HEADER)
   # awk 'NR>1' 的作用就是从第二行开始打印，完美去掉表头
-  BILLING_ACCOUNTS=$(echo "$BILLING_ACCOUNTS" | awk 'NR>1')
+# --- 终极诊断模式 ---
+echo -e "\n${YELLOW}--- 开始进入诊断模式 ---${RESET}"
+
+echo -e "\n${BLUE}步骤 1: 直接执行 gcloud 命令...${RESET}"
+RAW_GCLOUD_OUTPUT=$(gcloud beta billing accounts list --filter='OPEN' --format="table(ACCOUNT_ID, displayName)")
+
+echo -e "\n${BLUE}步骤 2: 打印 gcloud 命令的原始输出 (在两个'===='之间):${RESET}"
+echo "===="
+echo "${RAW_GCLOUD_OUTPUT}"
+echo "===="
+
+echo -e "\n${BLUE}步骤 3: 检查原始输出变量的长度...${RESET}"
+echo "原始输出 (RAW_GCLOUD_OUTPUT) 的字符长度是: ${#RAW_GCLOUD_OUTPUT}"
+
+echo -e "\n${BLUE}步骤 4: 用 awk 去掉表头...${RESET}"
+BILLING_ACCOUNTS=$(echo "${RAW_GCLOUD_OUTPUT}" | awk 'NR>1')
+
+echo -e "\n${BLUE}步骤 5: 打印经过 awk 处理后的最终内容 (在两个'===='之间):${RESET}"
+echo "===="
+echo "${BILLING_ACCOUNTS}"
+echo "===="
+
+echo -e "\n${BLUE}步骤 6: 检查最终变量的长度...${RESET}"
+echo "最终内容 (BILLING_ACCOUNTS) 的字符长度是: ${#BILLING_ACCOUNTS}"
+
+echo -e "\n${YELLOW}--- 诊断模式结束 ---\n${RESET}"
+# --- 诊断结束 ---
   # --- 修复结束 ---
   
   if [ -z "$BILLING_ACCOUNTS" ]; then
