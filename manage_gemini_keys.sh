@@ -155,14 +155,15 @@ function create_single_key_flow() {
 function create_batch_keys_flow() {
   echo -e "\n${YELLOW}正在获取可用的结算账户列表...${RESET}"
   
-  # --- 这是被修正的部分 (更健壮) ---
-  # 首先尝试使用 NAME 字段，这是您环境中使用的字段
-  BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="value(ACCOUNT_ID, NAME)")
-  # 如果上面命令返回空，则尝试使用 DISPLAY_NAME 作为备用方案
-  if [ -z "$BILLING_ACCOUNTS" ]; then
-      BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="value(ACCOUNT_ID, DISPLAY_NAME)")
-  fi
-  # --- 修正结束 ---
+# --- 终极修复版 ---
+# 'displayName' 是官方文档中最标准的字段名，我们优先使用它。
+# 并且我们直接使用 table 格式，让 gcloud 自己处理列名，避免兼容性问题。
+BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="table(ACCOUNT_ID, displayName)")
+
+# 我们需要去掉 gcloud table 格式的第一行表头 (HEADER)
+# awk 'NR>1' 的作用就是从第二行开始打印，完美去掉表头
+BILLING_ACCOUNTS=$(echo "$BILLING_ACCOUNTS" | awk 'NR>1')
+# --- 修复结束 ---
   
   if [ -z "$BILLING_ACCOUNTS" ]; then
     echo -e "${RED}错误：未找到任何有效的结算账户。${RESET}"
