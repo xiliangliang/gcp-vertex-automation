@@ -1,8 +1,5 @@
 #!/bin/bash
-# 文件名：manage_gemini_keys.sh (最终健壮版)
-# ... (其他部分代码与上一版相同，只修改 create_batch_keys_flow 函数) ...
-
-# ... (此处省略相同的函数: 颜色定义, 辅助函数, 查询函数, 单项目创建函数) ...
+# 文件名：manage_gemini_keys.sh (最终修复版)
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -95,7 +92,6 @@ function query_all_projects_keys() {
 # ======== 创建功能模块 ========
 
 function create_single_key_flow() {
-  # ... (此部分逻辑不变) ...
   echo -e "\n${YELLOW}正在获取GCP项目列表...${RESET}"
   PROJECT_LIST=$(gcloud projects list --format="value(projectId,name)" --sort-by=projectId)
   
@@ -155,15 +151,15 @@ function create_single_key_flow() {
 function create_batch_keys_flow() {
   echo -e "\n${YELLOW}正在获取可用的结算账户列表...${RESET}"
   
-# --- 终极修复版 ---
-# 'displayName' 是官方文档中最标准的字段名，我们优先使用它。
-# 并且我们直接使用 table 格式，让 gcloud 自己处理列名，避免兼容性问题。
-BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="table(ACCOUNT_ID, displayName)")
+  # --- 终极修复版 ---
+  # 'displayName' 是官方文档中最标准的字段名，我们优先使用它。
+  # 并且我们直接使用 table 格式，让 gcloud 自己处理列名，避免兼容性问题。
+  BILLING_ACCOUNTS=$(gcloud beta billing accounts list --filter='OPEN' --format="table(ACCOUNT_ID, displayName)")
 
-# 我们需要去掉 gcloud table 格式的第一行表头 (HEADER)
-# awk 'NR>1' 的作用就是从第二行开始打印，完美去掉表头
-BILLING_ACCOUNTS=$(echo "$BILLING_ACCOUNTS" | awk 'NR>1')
-# --- 修复结束 ---
+  # 我们需要去掉 gcloud table 格式的第一行表头 (HEADER)
+  # awk 'NR>1' 的作用就是从第二行开始打印，完美去掉表头
+  BILLING_ACCOUNTS=$(echo "$BILLING_ACCOUNTS" | awk 'NR>1')
+  # --- 修复结束 ---
   
   if [ -z "$BILLING_ACCOUNTS" ]; then
     echo -e "${RED}错误：未找到任何有效的结算账户。${RESET}"
