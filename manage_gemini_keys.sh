@@ -1,5 +1,5 @@
 #!/bin/bash
-# 文件名：manage_gemini_keys.sh (最终修复版)
+# 文件名：manage_gemini_keys.sh (修复版)
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -91,6 +91,61 @@ function query_all_projects_keys() {
 
 # ======== 创建功能模块 ========
 
+# 修复的API密钥创建函数
+function create_api_key() {
+  local project_id="$1"
+  local display_name="$2"
+  
+  echo "  正在生成API密钥..."
+  
+  # 创建API密钥并获取完整输出
+  local create_output
+  create_output=$(gcloud beta services api-keys create \
+    --display-name="$display_name" \
+    --project="$project_id" \
+    --api-target=service=generativelanguage.googleapis.com \
+    --format="json" 2>&1)
+  
+  local exit_code=$?
+  
+  if [ $exit_code -ne 0 ]; then
+    echo -e "  ${RED}API密钥创建命令执行失败${RESET}"
+    return 1
+  fi
+  
+  # 从输出中提取JSON部分（去除操作完成信息）
+  local json_part
+  json_part=$(echo "$create_output" | grep -A 50 '{' | grep -B 50 '}' | head -n -1 | tail -n +1)
+  
+  # 如果上面的方法失败，尝试另一种方法
+  if [ -z "$json_part" ] || ! echo "$json_part" | jq . >/dev/null 2>&1; then
+    # 尝试提取最后一个完整的JSON对象
+    json_part=$(echo "$create_output" | sed -n '/{/,/}/p' | tail -n +1)
+  fi
+  
+  # 验证JSON格式并提取keyString
+  if echo "$json_part" | jq . >/dev/null 2>&1; then
+    local api_key
+    api_key=$(echo "$json_part" | jq -r '.keyString // empty')
+    
+    if [[ "$api_key" == AIzaSy* ]]; then
+      echo "$api_key"
+      return 0
+    fi
+  fi
+  
+  # 如果JSON解析失败，尝试直接从输出中提取密钥
+  local direct_key
+  direct_key=$(echo "$create_output" | grep -o 'AIzaSy[A-Za-z0-9_-]*' | head -1)
+  
+  if [[ "$direct_key" == AIzaSy* ]]; then
+    echo "$direct_key"
+    return 0
+  fi
+  
+  return 1
+}
+
 function create_single_key_flow() {
   echo -e "\n${YELLOW}正在获取GCP项目列表...${RESET}"
   PROJECT_LIST=$(gcloud projects list --format="value(projectId,name)" --sort-by=projectId)
@@ -125,7 +180,7 @@ function create_single_key_flow() {
   echo -e "${GREEN}✓ 已选择项目: ${BLUE}${PROJECT_ID}${RESET}"
   gcloud config set project "$PROJECT_ID" --quiet || { echo -e "${RED}设置项目失败。${RESET}"; return; }
 
-  BILLING_ENABLED=$(gcloud beta billing projects describe "$PROJECT_ID" --format="value(billingEnabled)")
+  BILLING_ENABLED=$(gcloud beta billing projects describe "$PROJECT_ID" --format="value(billingEnabled)" 2>/dev/null)
   if [[ "$BILLING_ENABLED" == "False" ]]; then
     echo -e "${RED}警告: 项目 ${BLUE}${PROJECT_ID}${RESET}${RED} 未关联结算账户。${RESET}"
     echo "请访问此链接关联: ${BLUE}https://console.cloud.google.com/billing/linkedaccount?project=${PROJECT_ID}${RESET}"
@@ -138,7 +193,7 @@ function create_single_key_flow() {
   echo -e "${GREEN}✓ API已启用。${RESET}"
   
   echo -e "\n${YELLOW}正在生成API密钥...${RESET}"
-  API_KEY=$(gcloud beta services api-keys create --display-name="Auto_Gemini_Key_$(date +%s)" --project="$PROJECT_ID" --api-target=service=generativelanguage.googleapis.com --format="json(keyString)" | jq -r '.keyString')
+  API_KEY=$(create_api_key "$PROJECT_ID" "Auto_Gemini_Key_$(date +%s)")
 
   if [[ "$API_KEY" == AIzaSy* ]]; then
     echo -e "\n${GREEN}✅ API密钥生成成功！${RESET}"
@@ -226,7 +281,7 @@ function create_batch_keys_flow() {
       echo -e "  ${RED}启用API失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},API启用失败\n"; continue; fi
     
     echo "  (4/4) 正在生成API密钥..."
-    API_KEY=$(gcloud beta services api-keys create --display-name="Batch_Gemini_Key_$(date +%s)" --project="$PROJECT_ID" --api-target=service=generativelanguage.googleapis.com --format="json(keyString)" | jq -r '.keyString')
+    API_KEY=$(create_api_key "$PROJECT_ID" "Batch_Gemini_Key_$(date +%s)")
 
     if [[ "$API_KEY" == AIzaSy* ]]; then
       echo -e "  ${GREEN}✓ API密钥生成成功！${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},${API_KEY}\n"
