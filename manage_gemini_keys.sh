@@ -1,5 +1,5 @@
 #!/bin/bash
-# 文件名：manage_gemini_keys.sh (修复版)
+# 文件名：manage_gemini_keys.sh (完全修复版)
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -36,45 +36,106 @@ function check_dependencies() {
   echo -e "${GREEN}✓ 依赖和登录状态正常。${RESET}"
 }
 
+# ======== 通用API密钥获取函数 ========
+
+function get_api_keys_for_project() {
+  local project_id="$1"
+  local output_format="${2:-table}"  # table 或 json
+  
+  # 尝试获取API密钥列表
+  local keys_output
+  keys_output=$(gcloud beta services api-keys list --project="$project_id" --format="json" 2>/dev/null)
+  
+  if [ $? -ne 0 ] || [ -z "$keys_output" ] || [ "$keys_output" = "[]" ]; then
+    return 1  # 没有找到密钥或命令失败
+  fi
+  
+  # 验证JSON格式
+  if ! echo "$keys_output" | jq . >/dev/null 2>&1; then
+    return 1  # JSON格式无效
+  fi
+  
+  # 检查是否有密钥
+  local key_count
+  key_count=$(echo "$keys_output" | jq 'length')
+  if [ "$key_count" -eq 0 ]; then
+    return 1  # 没有密钥
+  fi
+  
+  if [ "$output_format" = "json" ]; then
+    echo "$keys_output"
+  else
+    # 格式化为表格输出
+    echo "$keys_output" | jq -r '.[] | "\(.displayName // "未命名")\t\(.keyString // "无法获取密钥")"'
+  fi
+  
+  return 0
+}
+
 # ======== 查询功能模块 ========
 
 function query_single_project_keys() {
   echo -e "\n${YELLOW}正在获取GCP项目列表...${RESET}"
-  PROJECT_LIST=$(gcloud projects list --format="value(projectId,name)" --sort-by=projectId)
-  if [ -z "$PROJECT_LIST" ]; then echo -e "${RED}未找到任何GCP项目。${RESET}"; return; fi
+  PROJECT_LIST=$(gcloud projects list --format="value(projectId,name)" --sort-by=projectId 2>/dev/null)
+  if [ -z "$PROJECT_LIST" ]; then 
+    echo -e "${RED}未找到任何GCP项目或无权限访问。${RESET}"
+    return
+  fi
   
-  echo "发现以下项目:"; echo -e "${BLUE}"; awk '{print NR, $1, "(" $2 ")"}' <<< "$PROJECT_LIST"; echo -e "${RESET}"
+  echo "发现以下项目:"
+  echo -e "${BLUE}"
+  awk '{print NR, $1, "(" $2 ")"}' <<< "$PROJECT_LIST"
+  echo -e "${RESET}"
+  
   read -p "请选择要查询的项目编号: " CHOICE
   
   PROJECT_ID=$(echo "$PROJECT_LIST" | awk -v choice="$CHOICE" 'NR==choice {print $1}')
-  if [ -z "$PROJECT_ID" ]; then echo -e "${RED}无效的选择。${RESET}"; return; fi
+  if [ -z "$PROJECT_ID" ]; then 
+    echo -e "${RED}无效的选择。${RESET}"
+    return
+  fi
   
   echo -e "\n${YELLOW}正在查询项目 ${BLUE}${PROJECT_ID}${RESET} 的API密钥...${RESET}"
-  KEYS_INFO=$(gcloud beta services api-keys list --project="$PROJECT_ID" --format="value(displayName,keyString)")
   
-  if [ -z "$KEYS_INFO" ]; then
+  # 使用新的通用函数获取密钥
+  KEYS_INFO=$(get_api_keys_for_project "$PROJECT_ID" "table")
+  
+  if [ $? -ne 0 ] || [ -z "$KEYS_INFO" ]; then
     echo -e "${GREEN}在项目 ${BLUE}${PROJECT_ID}${RESET} 中未找到任何API密钥。${RESET}"
   else
-    echo -e "${GREEN}查询结果如下:${RESET}"; echo "====================================================================================="
-    echo -e "${BLUE}显示名称\tAPI密钥${RESET}"; echo "$KEYS_INFO" | column -t
+    echo -e "${GREEN}查询结果如下:${RESET}"
+    echo "====================================================================================="
+    echo -e "${BLUE}显示名称\t\t\tAPI密钥${RESET}"
+    echo "-------------------------------------------------------------------------------------"
+    echo "$KEYS_INFO" | column -t -s $'\t'
     echo "====================================================================================="
   fi
 }
 
 function query_all_projects_keys() {
   echo -e "\n${YELLOW}正在查询您账户下所有项目的API密钥... (这可能需要一些时间)${RESET}"
-  ALL_PROJECTS=$(gcloud projects list --format="value(projectId)")
-  if [ -z "$ALL_PROJECTS" ]; then echo -e "${RED}未找到任何GCP项目。${RESET}"; return; fi
+  ALL_PROJECTS=$(gcloud projects list --format="value(projectId)" 2>/dev/null)
+  if [ -z "$ALL_PROJECTS" ]; then 
+    echo -e "${RED}未找到任何GCP项目或无权限访问。${RESET}"
+    return
+  fi
   
-  FINAL_SUMMARY="项目ID,密钥显示名称,API密钥\n"; FOUND_ANY_KEY=false
+  FINAL_SUMMARY="项目ID,密钥显示名称,API密钥\n"
+  FOUND_ANY_KEY=false
+  TOTAL_PROJECTS=$(echo "$ALL_PROJECTS" | wc -l)
+  CURRENT_COUNT=0
   
   for PROJECT_ID in $ALL_PROJECTS; do
-    echo -e "  -> 正在扫描项目: ${BLUE}${PROJECT_ID}${RESET}..."
-    KEYS_JSON=$(gcloud beta services api-keys list --project="$PROJECT_ID" --format="json" 2>/dev/null)
+    CURRENT_COUNT=$((CURRENT_COUNT + 1))
+    echo -e "  -> [${CURRENT_COUNT}/${TOTAL_PROJECTS}] 正在扫描项目: ${BLUE}${PROJECT_ID}${RESET}..."
     
-    if [ -n "$KEYS_JSON" ] && [ "$KEYS_JSON" != "[]" ]; then
+    # 使用新的通用函数获取密钥
+    KEYS_JSON=$(get_api_keys_for_project "$PROJECT_ID" "json")
+    
+    if [ $? -eq 0 ] && [ -n "$KEYS_JSON" ]; then
       FOUND_ANY_KEY=true
-      SUMMARY_PART=$(echo "$KEYS_JSON" | jq -r --arg pid "$PROJECT_ID" '.[] | "\($pid),\(.displayName),\(.keyString)"')
+      # 解析JSON并格式化为CSV
+      SUMMARY_PART=$(echo "$KEYS_JSON" | jq -r --arg pid "$PROJECT_ID" '.[] | "\($pid),\(.displayName // "未命名"),\(.keyString // "无法获取密钥")"')
       FINAL_SUMMARY+="${SUMMARY_PART}\n"
     fi
   done
@@ -113,18 +174,12 @@ function create_api_key() {
     return 1
   fi
   
-  # 从输出中提取JSON部分（去除操作完成信息）
+  # 方法1: 尝试从输出中提取完整的JSON对象
   local json_part
-  json_part=$(echo "$create_output" | grep -A 50 '{' | grep -B 50 '}' | head -n -1 | tail -n +1)
-  
-  # 如果上面的方法失败，尝试另一种方法
-  if [ -z "$json_part" ] || ! echo "$json_part" | jq . >/dev/null 2>&1; then
-    # 尝试提取最后一个完整的JSON对象
-    json_part=$(echo "$create_output" | sed -n '/{/,/}/p' | tail -n +1)
-  fi
+  json_part=$(echo "$create_output" | sed -n '/{/,/^}$/p' | tail -n +1)
   
   # 验证JSON格式并提取keyString
-  if echo "$json_part" | jq . >/dev/null 2>&1; then
+  if [ -n "$json_part" ] && echo "$json_part" | jq . >/dev/null 2>&1; then
     local api_key
     api_key=$(echo "$json_part" | jq -r '.keyString // empty')
     
@@ -134,7 +189,7 @@ function create_api_key() {
     fi
   fi
   
-  # 如果JSON解析失败，尝试直接从输出中提取密钥
+  # 方法2: 如果JSON解析失败，尝试直接从输出中提取密钥
   local direct_key
   direct_key=$(echo "$create_output" | grep -o 'AIzaSy[A-Za-z0-9_-]*' | head -1)
   
@@ -143,12 +198,38 @@ function create_api_key() {
     return 0
   fi
   
+  # 方法3: 尝试通过查询刚创建的密钥来获取
+  echo "  正在通过查询获取密钥..."
+  sleep 2  # 等待密钥创建完成
+  
+  local query_result
+  query_result=$(get_api_keys_for_project "$project_id" "json")
+  
+  if [ $? -eq 0 ] && [ -n "$query_result" ]; then
+    # 查找最新创建的密钥（按创建时间排序）
+    local latest_key
+    latest_key=$(echo "$query_result" | jq -r --arg name "$display_name" '.[] | select(.displayName == $name) | .keyString // empty' | head -1)
+    
+    if [[ "$latest_key" == AIzaSy* ]]; then
+      echo "$latest_key"
+      return 0
+    fi
+    
+    # 如果按名称找不到，尝试获取最新的密钥
+    latest_key=$(echo "$query_result" | jq -r 'sort_by(.createTime) | reverse | .[0].keyString // empty')
+    
+    if [[ "$latest_key" == AIzaSy* ]]; then
+      echo "$latest_key"
+      return 0
+    fi
+  fi
+  
   return 1
 }
 
 function create_single_key_flow() {
   echo -e "\n${YELLOW}正在获取GCP项目列表...${RESET}"
-  PROJECT_LIST=$(gcloud projects list --format="value(projectId,name)" --sort-by=projectId)
+  PROJECT_LIST=$(gcloud projects list --format="value(projectId,name)" --sort-by=projectId 2>/dev/null)
   
   if [ -z "$PROJECT_LIST" ]; then
     echo "未找到任何GCP项目。"
@@ -163,7 +244,10 @@ function create_single_key_flow() {
       echo -e "${RED}没有可用的项目。${RESET}"; return;
     fi
   else
-    echo "发现以下项目:"; echo -e "${BLUE}"; awk '{print NR, $1, "(" $2 ")"}' <<< "$PROJECT_LIST"; echo -e "${RESET}"
+    echo "发现以下项目:"
+    echo -e "${BLUE}"
+    awk '{print NR, $1, "(" $2 ")"}' <<< "$PROJECT_LIST"
+    echo -e "${RESET}"
     read -p "请选择要使用的项目编号 (或输入 'c' 创建新项目): " CHOICE
     
     if [[ "$CHOICE" == "c" || "$CHOICE" == "C" ]]; then
@@ -180,8 +264,9 @@ function create_single_key_flow() {
   echo -e "${GREEN}✓ 已选择项目: ${BLUE}${PROJECT_ID}${RESET}"
   gcloud config set project "$PROJECT_ID" --quiet || { echo -e "${RED}设置项目失败。${RESET}"; return; }
 
+  # 检查结算状态
   BILLING_ENABLED=$(gcloud beta billing projects describe "$PROJECT_ID" --format="value(billingEnabled)" 2>/dev/null)
-  if [[ "$BILLING_ENABLED" == "False" ]]; then
+  if [[ "$BILLING_ENABLED" == "False" ]] || [[ -z "$BILLING_ENABLED" ]]; then
     echo -e "${RED}警告: 项目 ${BLUE}${PROJECT_ID}${RESET}${RED} 未关联结算账户。${RESET}"
     echo "请访问此链接关联: ${BLUE}https://console.cloud.google.com/billing/linkedaccount?project=${PROJECT_ID}${RESET}"
     read -p "是否仍然尝试继续? (y/n): " CONTINUE_ANYWAY
@@ -197,7 +282,10 @@ function create_single_key_flow() {
 
   if [[ "$API_KEY" == AIzaSy* ]]; then
     echo -e "\n${GREEN}✅ API密钥生成成功！${RESET}"
-    echo "========================================"; echo -e "${BLUE}项目ID:${RESET} ${PROJECT_ID}"; echo -e "${BLUE}API密钥:${RESET} ${API_KEY}"; echo "========================================"
+    echo "========================================"
+    echo -e "${BLUE}项目ID:${RESET} ${PROJECT_ID}"
+    echo -e "${BLUE}API密钥:${RESET} ${API_KEY}"
+    echo "========================================"
   else
     echo -e "${RED}❌ API密钥生成失败！请检查权限或结算状态。${RESET}"
   fi
@@ -206,8 +294,8 @@ function create_single_key_flow() {
 function create_batch_keys_flow() {
   echo -e "\n${YELLOW}正在获取结算账户列表...${RESET}"
   
-  # 获取所有结算账户（不移除任何账户）
-  BILLING_ACCOUNTS_JSON=$(gcloud beta billing accounts list --format=json)
+  # 获取所有结算账户
+  BILLING_ACCOUNTS_JSON=$(gcloud beta billing accounts list --format=json 2>/dev/null)
   
   if [ -z "$BILLING_ACCOUNTS_JSON" ] || [ "$BILLING_ACCOUNTS_JSON" = "[]" ]; then
     echo -e "${YELLOW}无法自动获取结算账户列表，请手动输入结算账户ID。${RESET}"
@@ -260,9 +348,13 @@ function create_batch_keys_flow() {
   echo -e "${GREEN}✓ 已选择结算账户: ${BLUE}${SELECTED_BILLING_ACCOUNT_ID}${RESET}"
 
   read -p "您想创建多少个新项目? " PROJECT_COUNT
-  if ! [[ "$PROJECT_COUNT" =~ ^[1-9][0-9]*$ ]]; then echo -e "${RED}请输入一个大于0的有效数字。${RESET}"; return; fi
+  if ! [[ "$PROJECT_COUNT" =~ ^[1-9][0-9]*$ ]]; then 
+    echo -e "${RED}请输入一个大于0的有效数字。${RESET}"
+    return
+  fi
   
-  FINAL_SUMMARY="项目ID,API密钥\n"; BASE_PROJECT_NAME="gemini-batch-$(date +%Y%m%d)"
+  FINAL_SUMMARY="项目ID,API密钥\n"
+  BASE_PROJECT_NAME="gemini-batch-$(date +%Y%m%d)"
   
   for i in $(seq 1 "$PROJECT_COUNT"); do
     PROJECT_ID="${BASE_PROJECT_NAME}-$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)"
@@ -270,23 +362,35 @@ function create_batch_keys_flow() {
     
     echo "  (1/4) 正在创建项目..."
     if ! gcloud projects create "$PROJECT_ID" --quiet; then
-      echo -e "  ${RED}项目创建失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},项目创建失败\n"; continue; fi
+      echo -e "  ${RED}项目创建失败，跳过。${RESET}"
+      FINAL_SUMMARY+="${PROJECT_ID},项目创建失败\n"
+      continue
+    fi
     
     echo "  (2/4) 正在关联结算账户..."
     if ! gcloud beta billing projects link "$PROJECT_ID" --billing-account="$SELECTED_BILLING_ACCOUNT_ID" --quiet; then
-      echo -e "  ${RED}关联结算失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},关联结算失败\n"; continue; fi
+      echo -e "  ${RED}关联结算失败，跳过。${RESET}"
+      FINAL_SUMMARY+="${PROJECT_ID},关联结算失败\n"
+      continue
+    fi
     
-    echo "  (3/4) 正在启用 API..."; sleep 5
+    echo "  (3/4) 正在启用 API..."
+    sleep 5  # 等待项目初始化
     if ! gcloud services enable generativelanguage.googleapis.com --project="$PROJECT_ID" --quiet; then
-      echo -e "  ${RED}启用API失败，跳过。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},API启用失败\n"; continue; fi
+      echo -e "  ${RED}启用API失败，跳过。${RESET}"
+      FINAL_SUMMARY+="${PROJECT_ID},API启用失败\n"
+      continue
+    fi
     
     echo "  (4/4) 正在生成API密钥..."
     API_KEY=$(create_api_key "$PROJECT_ID" "Batch_Gemini_Key_$(date +%s)")
 
     if [[ "$API_KEY" == AIzaSy* ]]; then
-      echo -e "  ${GREEN}✓ API密钥生成成功！${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},${API_KEY}\n"
+      echo -e "  ${GREEN}✓ API密钥生成成功！${RESET}"
+      FINAL_SUMMARY+="${PROJECT_ID},${API_KEY}\n"
     else
-      echo -e "  ${RED}API密钥生成失败。${RESET}"; FINAL_SUMMARY+="${PROJECT_ID},密钥生成失败\n"
+      echo -e "  ${RED}API密钥生成失败。${RESET}"
+      FINAL_SUMMARY+="${PROJECT_ID},密钥生成失败\n"
     fi
   done
 
