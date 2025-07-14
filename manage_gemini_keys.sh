@@ -1,5 +1,5 @@
 #!/bin/bash
-# 文件名：manage_gemini_keys.sh (完全修复版)
+# 文件名：manage_gemini_keys.sh (完全修复版 - 解决密钥提取问题)
 
 # ======== 颜色定义 ========
 RED="\033[1;31m"
@@ -42,31 +42,84 @@ function get_api_keys_for_project() {
   local project_id="$1"
   local output_format="${2:-table}"  # table 或 json
   
-  # 尝试获取API密钥列表
-  local keys_output
-  keys_output=$(gcloud beta services api-keys list --project="$project_id" --format="json" 2>/dev/null)
+  echo "    正在获取项目 ${project_id} 的密钥列表..." >&2
   
-  if [ $? -ne 0 ] || [ -z "$keys_output" ] || [ "$keys_output" = "[]" ]; then
-    return 1  # 没有找到密钥或命令失败
+  # 首先获取密钥列表（不包含keyString）
+  local keys_list
+  keys_list=$(gcloud beta services api-keys list --project="$project_id" --format="json" 2>/dev/null)
+  
+  if [ $? -ne 0 ] || [ -z "$keys_list" ] || [ "$keys_list" = "[]" ]; then
+    echo "    项目 ${project_id} 中没有找到API密钥" >&2
+    return 1
   fi
   
   # 验证JSON格式
-  if ! echo "$keys_output" | jq . >/dev/null 2>&1; then
-    return 1  # JSON格式无效
+  if ! echo "$keys_list" | jq . >/dev/null 2>&1; then
+    echo "    项目 ${project_id} 返回的数据格式无效" >&2
+    return 1
   fi
   
   # 检查是否有密钥
   local key_count
-  key_count=$(echo "$keys_output" | jq 'length')
+  key_count=$(echo "$keys_list" | jq 'length')
   if [ "$key_count" -eq 0 ]; then
-    return 1  # 没有密钥
+    echo "    项目 ${project_id} 中没有API密钥" >&2
+    return 1
   fi
   
+  echo "    找到 ${key_count} 个密钥，正在获取密钥字符串..." >&2
+  
+  # 为每个密钥获取完整信息（包含keyString）
+  local enhanced_keys="[]"
+  
+  while IFS= read -r key_name; do
+    if [ -n "$key_name" ] && [ "$key_name" != "null" ]; then
+      echo "      正在获取密钥: $(basename "$key_name")..." >&2
+      
+      # 获取单个密钥的完整信息
+      local key_detail
+      key_detail=$(gcloud beta services api-keys get-key-string "$key_name" --format="json" 2>/dev/null)
+      
+      if [ $? -eq 0 ] && [ -n "$key_detail" ]; then
+        # 提取keyString
+        local key_string
+        key_string=$(echo "$key_detail" | jq -r '.keyString // empty')
+        
+        if [ -n "$key_string" ] && [ "$key_string" != "null" ] && [ "$key_string" != "" ]; then
+          # 获取密钥的基本信息
+          local key_info
+          key_info=$(echo "$keys_list" | jq --arg name "$key_name" '.[] | select(.name == $name)')
+          
+          if [ -n "$key_info" ]; then
+            # 将keyString添加到密钥信息中
+            key_info=$(echo "$key_info" | jq --arg keyStr "$key_string" '. + {keyString: $keyStr}')
+            enhanced_keys=$(echo "$enhanced_keys" | jq ". += [$key_info]")
+          fi
+        else
+          echo "      警告: 无法获取密钥字符串 $(basename "$key_name")" >&2
+        fi
+      else
+        echo "      警告: 无法获取密钥详情 $(basename "$key_name")" >&2
+      fi
+    fi
+  done < <(echo "$keys_list" | jq -r '.[].name')
+  
+  # 检查是否成功获取到任何密钥
+  local final_count
+  final_count=$(echo "$enhanced_keys" | jq 'length')
+  
+  if [ "$final_count" -eq 0 ]; then
+    echo "    无法获取任何密钥的字符串" >&2
+    return 1
+  fi
+  
+  echo "    成功获取 ${final_count} 个密钥的完整信息" >&2
+  
   if [ "$output_format" = "json" ]; then
-    echo "$keys_output"
+    echo "$enhanced_keys"
   else
     # 格式化为表格输出
-    echo "$keys_output" | jq -r '.[] | "\(.displayName // "未命名")\t\(.keyString // "无法获取密钥")"'
+    echo "$enhanced_keys" | jq -r '.[] | "\(.displayName // "未命名")\t\(.keyString // "无法获取密钥")"'
   fi
   
   return 0
@@ -98,7 +151,7 @@ function query_single_project_keys() {
   echo -e "\n${YELLOW}正在查询项目 ${BLUE}${PROJECT_ID}${RESET} 的API密钥...${RESET}"
   
   # 使用新的通用函数获取密钥
-  KEYS_INFO=$(get_api_keys_for_project "$PROJECT_ID" "table")
+  KEYS_INFO=$(get_api_keys_for_project "$PROJECT_ID" "table" 2>/dev/null)
   
   if [ $? -ne 0 ] || [ -z "$KEYS_INFO" ]; then
     echo -e "${GREEN}在项目 ${BLUE}${PROJECT_ID}${RESET} 中未找到任何API密钥。${RESET}"
@@ -159,71 +212,32 @@ function create_api_key() {
   
   echo "  正在生成API密钥..."
   
-  # 创建API密钥并获取完整输出
-  local create_output
-  create_output=$(gcloud beta services api-keys create \
+  # 创建API密钥
+  local key_name
+  key_name=$(gcloud beta services api-keys create \
     --display-name="$display_name" \
     --project="$project_id" \
     --api-target=service=generativelanguage.googleapis.com \
-    --format="json" 2>&1)
+    --format="value(name)" 2>/dev/null)
   
-  local exit_code=$?
-  
-  if [ $exit_code -ne 0 ]; then
-    echo -e "  ${RED}API密钥创建命令执行失败${RESET}"
+  if [ $? -ne 0 ] || [ -z "$key_name" ]; then
+    echo -e "  ${RED}API密钥创建失败${RESET}"
     return 1
   fi
   
-  # 方法1: 尝试从输出中提取完整的JSON对象
-  local json_part
-  json_part=$(echo "$create_output" | sed -n '/{/,/^}$/p' | tail -n +1)
+  echo "  密钥创建成功，正在获取密钥字符串..."
+  sleep 2  # 等待密钥完全创建
   
-  # 验证JSON格式并提取keyString
-  if [ -n "$json_part" ] && echo "$json_part" | jq . >/dev/null 2>&1; then
-    local api_key
-    api_key=$(echo "$json_part" | jq -r '.keyString // empty')
-    
-    if [[ "$api_key" == AIzaSy* ]]; then
-      echo "$api_key"
-      return 0
-    fi
-  fi
+  # 获取密钥字符串
+  local api_key
+  api_key=$(gcloud beta services api-keys get-key-string "$key_name" --format="value(keyString)" 2>/dev/null)
   
-  # 方法2: 如果JSON解析失败，尝试直接从输出中提取密钥
-  local direct_key
-  direct_key=$(echo "$create_output" | grep -o 'AIzaSy[A-Za-z0-9_-]*' | head -1)
-  
-  if [[ "$direct_key" == AIzaSy* ]]; then
-    echo "$direct_key"
+  if [ $? -eq 0 ] && [[ "$api_key" == AIzaSy* ]]; then
+    echo "$api_key"
     return 0
   fi
   
-  # 方法3: 尝试通过查询刚创建的密钥来获取
-  echo "  正在通过查询获取密钥..."
-  sleep 2  # 等待密钥创建完成
-  
-  local query_result
-  query_result=$(get_api_keys_for_project "$project_id" "json")
-  
-  if [ $? -eq 0 ] && [ -n "$query_result" ]; then
-    # 查找最新创建的密钥（按创建时间排序）
-    local latest_key
-    latest_key=$(echo "$query_result" | jq -r --arg name "$display_name" '.[] | select(.displayName == $name) | .keyString // empty' | head -1)
-    
-    if [[ "$latest_key" == AIzaSy* ]]; then
-      echo "$latest_key"
-      return 0
-    fi
-    
-    # 如果按名称找不到，尝试获取最新的密钥
-    latest_key=$(echo "$query_result" | jq -r 'sort_by(.createTime) | reverse | .[0].keyString // empty')
-    
-    if [[ "$latest_key" == AIzaSy* ]]; then
-      echo "$latest_key"
-      return 0
-    fi
-  fi
-  
+  echo -e "  ${RED}无法获取密钥字符串${RESET}"
   return 1
 }
 
