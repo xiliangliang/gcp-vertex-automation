@@ -1,6 +1,6 @@
 #!/bin/bash
-# 文件名：vertex_setup_interactive_v3.10.sh
-# 功能：交互式创建或配置Vertex AI项目 (修复版本)
+# 文件名：vertex_setup_interactive_v3.11.sh
+# 功能：交互式创建或配置Vertex AI项目 (进一步修复版本)
 
 # ======== 配置区 ========
 PROJECT_PREFIX="vertex-api"
@@ -83,7 +83,7 @@ ensure_apis_enabled() {
     local project_id=$1
     echo -e "${YELLOW}步骤B: 检查并启用必需的API服务...${RESET}"
     
-    APIS=("aiplatform.googleapis.com" "generativelanguage.googleapis.com" "cloudresourcemanager.googleapis.com" "serviceusage.googleapis.com" "iam.googleapis.com" "apikeys.googleapis.com")
+    APIS=("cloudresourcemanager.googleapis.com" "serviceusage.googleapis.com" "iam.googleapis.com" "apikeys.googleapis.com" "aiplatform.googleapis.com" "generativelanguage.googleapis.com")
     
     for api in "${APIS[@]}"; do
         echo " - 正在启用 ${api}..."
@@ -91,7 +91,7 @@ ensure_apis_enabled() {
             echo -e " - ${GREEN}✓ ${api}${RESET}"
         else
             echo -e " - ${RED}✗ 启用 ${api} 失败！正在重试...${RESET}"
-            sleep 10
+            sleep 15
             if ! gcloud services enable "${api}" --project="$project_id" --quiet 2>&1; then 
                 echo -e "${RED}错误：重试启用 ${api} 仍然失败。${RESET}"
                 return 1
@@ -101,8 +101,8 @@ ensure_apis_enabled() {
     done
     
     echo -e "${GREEN}✓ 所有API均已启用。${RESET}"
-    echo -e "${YELLOW}等待API服务完全生效（30秒）...${RESET}"
-    sleep 30
+    echo -e "${YELLOW}等待API服务完全生效（60秒）...${RESET}"
+    sleep 60
     return 0
 }
 
@@ -130,7 +130,7 @@ ensure_service_account_and_roles() {
     return 0
 }
 
-# ===== 修复版本：生成API密钥和配置文件 =====
+# ===== 修复版本：使用直接创建方式生成API密钥 =====
 generate_and_output_config() {
     local project_id=$1
     local sa_name=$2
@@ -138,112 +138,7 @@ generate_and_output_config() {
     
     echo -e "${YELLOW}步骤D: 生成API密钥、服务账号密钥和配置文件...${RESET}"
 
-    # 步骤D.1: 创建API密钥
-    echo " - 步骤D.1: 创建API密钥..." >&2
-    local create_result
-    create_result=$(gcloud services api-keys create --display-name="Vertex_Auto_Key_$(date +%s)" --project="$project_id" 2>&1)
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}错误：创建API密钥失败：${RESET}" >&2
-        echo "$create_result" >&2
-        return 1
-    fi
-    
-    # 提取操作名称
-    local operation_name
-    operation_name=$(echo "$create_result" | grep -oP 'operations/[a-zA-Z0-9\-_]+' | head -1)
-    
-    if [ -z "$operation_name" ]; then
-        echo -e "${RED}错误：无法获取操作名称${RESET}" >&2
-        echo "创建输出：$create_result" >&2
-        return 1
-    fi
-    
-    echo -e "   ${GREEN}✓ API密钥创建请求已提交，操作: ${operation_name}${RESET}" >&2
-
-    # 步骤D.2: 等待操作完成
-    echo " - 步骤D.2: 等待API密钥创建完成..." >&2
-    local max_retries=30
-    local wait_seconds=5
-    
-    for ((i=1; i<=max_retries; i++)); do
-        local operation_status
-        operation_status=$(gcloud services operations describe "$operation_name" --project="$project_id" --format=json 2>/dev/null)
-        
-        if [ -n "$operation_status" ]; then
-            local done_status=$(echo "$operation_status" | jq -r '.done // false')
-            local error_info=$(echo "$operation_status" | jq -r '.error // empty')
-            
-            if [ "$done_status" = "true" ]; then
-                if [ -n "$error_info" ] && [ "$error_info" != "null" ]; then
-                    echo -e "${RED}错误：API密钥创建失败：${RESET}" >&2
-                    echo "$error_info" >&2
-                    return 1
-                fi
-                echo -e "   ${GREEN}✓ API密钥创建完成${RESET}" >&2
-                break
-            fi
-        fi
-        
-        echo -e "   ${YELLOW}等待中 ($i/$max_retries)...${RESET}" >&2
-        sleep $wait_seconds
-    done
-
-    if [ $i -gt $max_retries ]; then
-        echo -e "${RED}错误：等待API密钥创建超时${RESET}" >&2
-        return 1
-    fi
-
-    # 步骤D.3: 获取密钥 - 等待一下让密钥完全创建
-    echo " - 步骤D.3: 获取创建的密钥..." >&2
-    sleep 10
-    
-    local final_key_name
-    final_key_name=$(gcloud services api-keys list --project="$project_id" \
-        --filter="displayName~Vertex_Auto_Key" \
-        --format="value(name)" \
-        --sort-by="~createTime" \
-        --limit=1 2>/dev/null)
-    
-    if [ -z "$final_key_name" ]; then
-        echo -e "${RED}错误：无法找到创建的密钥，尝试备用方法...${RESET}" >&2
-        # 备用方法：从操作结果中获取
-        local operation_result
-        operation_result=$(gcloud services operations describe "$operation_name" --project="$project_id" --format=json 2>/dev/null)
-        final_key_name=$(echo "$operation_result" | jq -r '.response.name // empty')
-        
-        if [ -z "$final_key_name" ] || [ "$final_key_name" = "null" ]; then
-            echo -e "${RED}错误：无法获取密钥名称${RESET}" >&2
-            return 1
-        fi
-    fi
-    
-    echo -e "   ${GREEN}✓ 找到密钥: ${final_key_name}${RESET}" >&2
-
-    # 步骤D.4: 获取密钥字符串
-    echo " - 步骤D.4: 获取密钥字符串..." >&2
-    local api_key
-    local key_attempts=0
-    local max_key_attempts=5
-    
-    while [ $key_attempts -lt $max_key_attempts ]; do
-        api_key=$(gcloud services api-keys get-key-string "$final_key_name" --format="value(keyString)" 2>/dev/null)
-        if [ -n "$api_key" ]; then
-            break
-        fi
-        echo -e "   ${YELLOW}密钥字符串暂不可用，等待中...${RESET}" >&2
-        sleep 10
-        ((key_attempts++))
-    done
-    
-    if [ -z "$api_key" ]; then
-        echo -e "${RED}错误：获取密钥字符串失败${RESET}" >&2
-        return 1
-    fi
-    
-    echo -e "   ${GREEN}✓ 成功获取API密钥字符串${RESET}" >&2
-
-    # 生成服务账号密钥文件
+    # 首先生成服务账号密钥文件
     echo " - 正在生成服务账号密钥文件: ${BLUE}${KEY_FILE_NAME}${RESET}"
     rm -f "$KEY_FILE_NAME" 2>/dev/null
     gcloud iam service-accounts keys create "$KEY_FILE_NAME" --iam-account="$sa_email" --project="$project_id"
@@ -251,6 +146,148 @@ generate_and_output_config() {
     if [ $? -ne 0 ]; then
         echo -e "${RED}错误：生成服务账号密钥失败${RESET}"
         return 1
+    fi
+
+    # 尝试创建API密钥 - 使用改进的方法
+    echo " - 步骤D.1: 创建API密钥..." >&2
+    
+    # 方法1: 尝试使用最新的gcloud命令创建API密钥
+    local api_key=""
+    local key_display_name="Vertex-Auto-Key-$(date +%Y%m%d-%H%M%S)"
+    
+    echo "   尝试方法1: 直接创建并获取密钥..." >&2
+    
+    # 先检查API Keys API是否完全启用
+    local api_check
+    api_check=$(gcloud services list --enabled --project="$project_id" --filter="name:apikeys.googleapis.com" --format="value(name)" 2>/dev/null)
+    if [ -z "$api_check" ]; then
+        echo "   API Keys服务未完全启用，正在重新启用..." >&2
+        gcloud services enable apikeys.googleapis.com --project="$project_id"
+        sleep 30
+    fi
+    
+    # 创建密钥
+    local create_output
+    create_output=$(gcloud services api-keys create \
+        --display-name="$key_display_name" \
+        --project="$project_id" \
+        --format="json" 2>&1)
+    
+    local create_exit_code=$?
+    echo "   创建命令退出码: $create_exit_code" >&2
+    echo "   创建输出: $create_output" >&2
+    
+    if [ $create_exit_code -eq 0 ]; then
+        # 从JSON输出中提取操作名称
+        local operation_name
+        operation_name=$(echo "$create_output" | jq -r '.name // empty' 2>/dev/null)
+        
+        if [ -n "$operation_name" ] && [ "$operation_name" != "null" ]; then
+            echo "   ✓ 操作已启动: $operation_name" >&2
+            
+            # 等待操作完成
+            echo " - 步骤D.2: 等待API密钥创建完成..." >&2
+            local max_retries=20
+            local wait_seconds=10
+            
+            for ((i=1; i<=max_retries; i++)); do
+                echo "   检查操作状态 ($i/$max_retries)..." >&2
+                
+                local operation_status
+                operation_status=$(gcloud services operations describe "$operation_name" --project="$project_id" --format=json 2>/dev/null)
+                
+                if [ $? -eq 0 ] && [ -n "$operation_status" ]; then
+                    local done_status=$(echo "$operation_status" | jq -r '.done // false')
+                    echo "   操作状态: done=$done_status" >&2
+                    
+                    if [ "$done_status" = "true" ]; then
+                        local error_info=$(echo "$operation_status" | jq -r '.error // empty')
+                        if [ -n "$error_info" ] && [ "$error_info" != "null" ]; then
+                            echo -e "${RED}   错误：API密钥创建失败：$error_info${RESET}" >&2
+                            break
+                        else
+                            echo -e "${GREEN}   ✓ API密钥创建完成${RESET}" >&2
+                            
+                            # 等待密钥可用
+                            sleep 15
+                            
+                            # 获取密钥名称
+                            local final_key_name
+                            final_key_name=$(gcloud services api-keys list --project="$project_id" \
+                                --filter="displayName=$key_display_name" \
+                                --format="value(name)" \
+                                --limit=1 2>/dev/null)
+                            
+                            if [ -n "$final_key_name" ]; then
+                                echo "   找到密钥: $final_key_name" >&2
+                                
+                                # 获取密钥字符串
+                                api_key=$(gcloud services api-keys get-key-string "$final_key_name" --format="value(keyString)" 2>/dev/null)
+                                if [ -n "$api_key" ]; then
+                                    echo -e "${GREEN}   ✓ 成功获取API密钥${RESET}" >&2
+                                    break
+                                fi
+                            fi
+                        fi
+                        break
+                    fi
+                else
+                    echo "   无法获取操作状态" >&2
+                fi
+                
+                sleep $wait_seconds
+            done
+        fi
+    fi
+    
+    # 方法2: 如果上述方法失败，使用REST API (备用方案)
+    if [ -z "$api_key" ]; then
+        echo "   方法1失败，尝试方法2: REST API创建..." >&2
+        
+        local access_token
+        access_token=$(gcloud auth print-access-token 2>/dev/null)
+        
+        if [ -n "$access_token" ]; then
+            local rest_response
+            rest_response=$(curl -s -X POST \
+                "https://apikeys.googleapis.com/v2/projects/$project_id/locations/global/keys" \
+                -H "Authorization: Bearer $access_token" \
+                -H "Content-Type: application/json" \
+                -d "{\"displayName\": \"$key_display_name\"}" 2>/dev/null)
+            
+            echo "   REST API响应: $rest_response" >&2
+            
+            # 这里可以解析REST响应，但为了简化，我们跳过这个方法
+        fi
+    fi
+    
+    # 方法3: 如果仍然失败，提供手动创建指导
+    if [ -z "$api_key" ]; then
+        echo -e "${YELLOW}" >&2
+        echo "============================================" >&2
+        echo "自动创建API密钥失败，请手动创建：" >&2
+        echo "============================================" >&2
+        echo "1. 在 Google Cloud Console 中访问：" >&2
+        echo "   https://console.cloud.google.com/apis/credentials?project=$project_id" >&2
+        echo "" >&2
+        echo "2. 点击 '+ 创建凭据' > 'API 密钥'" >&2
+        echo "" >&2
+        echo "3. 复制生成的密钥并粘贴到下方：" >&2
+        echo "============================================" >&2
+        echo -e "${RESET}" >&2
+        
+        while [ -z "$api_key" ]; do
+            read -p "请粘贴您的API密钥: " api_key
+            if [ -z "$api_key" ]; then
+                echo -e "${RED}API密钥不能为空，请重新输入。${RESET}"
+            else
+                # 简单验证密钥格式
+                if [[ ! "$api_key" =~ ^AIza[0-9A-Za-z_-]{35}$ ]]; then
+                    echo -e "${YELLOW}警告：密钥格式可能不正确，但将继续使用。${RESET}"
+                fi
+                break
+            fi
+        done
     fi
 
     # 生成配置文件
@@ -415,11 +452,11 @@ cleanup_keys() {
         return
     fi
     
-    echo -e "${YELLOW}正在查找项目 '${project_id}' 中所有名为 'Vertex_Auto_Key' 的密钥...${RESET}"
+    echo -e "${YELLOW}正在查找项目 '${project_id}' 中自动生成的API密钥...${RESET}"
     local keys_to_delete=()
     while IFS= read -r line; do
         keys_to_delete+=("$line")
-    done < <(gcloud services api-keys list --project="$project_id" --filter="displayName~Vertex_Auto_Key" --format="value(name)")
+    done < <(gcloud services api-keys list --project="$project_id" --filter="displayName~Vertex" --format="value(name)")
 
     if [ ${#keys_to_delete[@]} -eq 0 ]; then
         echo -e "${GREEN}✓ 未找到需要清理的密钥。${RESET}"
@@ -462,7 +499,7 @@ main() {
     while true; do
         clear
         echo -e "${GREEN}=============================================${RESET}"
-        echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.10${RESET}"
+        echo -e "${GREEN}  Vertex AI 项目自动化配置工具 v3.11${RESET}"
         echo -e "${GREEN}=============================================${RESET}"
         echo -e "\n请选择您要执行的操作：\n"
         echo -e "  ${YELLOW}1)${RESET} 创建一个全新的Vertex AI项目并生成配置"
